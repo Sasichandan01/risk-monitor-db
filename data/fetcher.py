@@ -29,7 +29,7 @@ class StockDataFetcher:
         config,
         aws_profile='Absc',
         aws_region='ap-south-1',
-        instruments_file='nse_instruments.csv',
+        instruments_file='/mnt/tmpfs/nse_instruments.csv',
         s3_bucket='nse-instruments-data',
         s3_key='instruments/nse_instruments.csv'
     ):
