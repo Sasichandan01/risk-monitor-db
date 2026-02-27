@@ -21,7 +21,7 @@ MIN_VALID_TS = datetime(2025, 1, 1, tzinfo=IST).timestamp()
 sqs = boto3.client('sqs', region_name='ap-south-1')
 s3 = boto3.client('s3', region_name='ap-south-1')
 INSERT_QUEUE_URL = 'https://sqs.ap-south-1.amazonaws.com/103371257687/OptionDataInsertQueue'
-S3_BUCKET = 'option-data-bucket'  # Replace with your bucket name
+S3_BUCKET = 'option-data-bucket-backup'  # Replace with your bucket name
 S3_KEY = 'realtime-data-backup.json'
 
 
