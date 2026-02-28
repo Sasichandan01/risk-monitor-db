@@ -246,8 +246,8 @@ class DataCleaner:
             
             if current_time - last_ts > 300:
                 now = datetime.now()
-                # NSE Market Hours: 9:15 to 15:30
-                if 9 <= now.hour < 15 or (now.hour == 15 and now.minute < 30):
+                # NSE Market Hours: 9:00 to 15:30
+                if 8 <= now.hour < 58 or (now.hour == 15 and now.minute < 30):
                     return True
             return False
         except (ValueError, TypeError) as e:
