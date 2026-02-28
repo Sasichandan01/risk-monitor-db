@@ -28,6 +28,26 @@ S3_KEY = 'realtime-data-backup.json'
 class OptionsRiskAnalyzer:
 
     def __init__(self, fetcher, config):
+        """
+        Initialize OptionsRiskAnalyzer instance.
+
+        Args:
+            fetcher (StockDataFetcher): StockDataFetcher instance
+            config (SSMConfig): SSMConfig instance
+
+        Attributes:
+            fetcher (StockDataFetcher): StockDataFetcher instance
+            config (SSMConfig): SSMConfig instance
+            risk_calculator (RiskCalculator): RiskCalculator instance
+            latest_data (dict): Latest data received from WebSocket
+            latest_data_lock (threading.Lock): Lock for accessing latest_data
+            running (bool): Flag indicating if the analyzer is running
+            last_spot_ssm_write (float): Last update time for Nifty spot price in SSM
+            last_data_received (float): Last data received timestamp
+            health_check_interval (int): Interval (in seconds) for health checking
+            data_timeout (int): No data timeout (in seconds) for health checking
+            stats (dict): Statistics for the analyzer
+        """
         self.fetcher = fetcher
         self.config = config
         self.risk_calculator = RiskCalculator()
@@ -50,6 +70,17 @@ class OptionsRiskAnalyzer:
         }
 
     def start(self):
+        """
+        Starts the OptionsRiskAnalyzer instance.
+
+        Loads backup from S3 if exists, starts batch writer and health check threads,
+        and starts WebSocket polling.
+
+        Raises:
+            RuntimeError: If any thread or WebSocket polling fails
+            ValueError: If any thread or WebSocket polling fails due to invalid input
+            TypeError: If any thread or WebSocket polling fails due to invalid input type
+        """
         try:
             logger.info("Starting Options Risk Analyzer...")
             
@@ -212,6 +243,23 @@ class OptionsRiskAnalyzer:
             logger.error("Load from S3 error: %s", e)
 
     def _batch_writer(self):
+        """
+        Starts a batch writer that aligns to the 30s market boundaries and writes the
+        latest data to SQS every 30s.
+
+        The batch writer will start at the next 30s boundary after the market opens (09:15)
+        and stop at the next 30s boundary after the market closes (15:30).
+
+        The batch writer will sleep for the remaining seconds until the next 30s boundary if
+        the current time is not aligned to the 30s boundary.
+
+        If an error occurs while flushing the batch, the batch writer will continue to run
+        and log the error.
+
+        The batch writer will also log the time when the market opens and closes.
+
+        The batch writer will run in a separate thread and will not block the main thread.
+        """
         logger.info("Batch writer started — aligning to 30s market boundaries")
 
         while self.running:
@@ -245,6 +293,17 @@ class OptionsRiskAnalyzer:
                 time.sleep(30)
 
     def _flush_batch(self):
+        """
+        Flushes the latest data to SQS as a batch.
+
+        This function takes a snapshot of the latest data and clears the buffer.
+        It then sends the snapshot to SQS as a batch.
+
+        If an error occurs while sending the batch to SQS, the batch is
+        returned to the buffer and the error is logged.
+
+        The function logs the number of records flushed and the size of the payload.
+        """
         snapshot = {}
         try:
             with self.latest_data_lock:
@@ -286,6 +345,20 @@ class OptionsRiskAnalyzer:
             self.stats['errors'] += 1
 
     def _is_valid_timestamp(self, ltt_ms):
+        """
+        Checks if the given LTT timestamp is valid.
+
+        A valid LTT timestamp is defined as a timestamp that is:
+
+        - Not older than 60 seconds
+        - Not before the minimum valid timestamp (January 1, 2025)
+
+        Args:
+            ltt_ms (int|str): The LTT timestamp in milliseconds
+
+        Returns:
+            bool: True if the LTT timestamp is valid, False otherwise
+        """
         if ltt_ms is None:
             return False
         try:
@@ -309,6 +382,18 @@ class OptionsRiskAnalyzer:
         return feed_time.replace(second=next_sec, microsecond=0)
 
     def on_message_handler(self, data):
+        """
+        Handles WebSocket messages from Upstox API.
+
+        Extracts feed information, instrument metadata, and LTT timestamp from the
+        message. If the LTT timestamp is valid, processes the feed information and
+        updates the latest data for the instrument.
+
+        Logs errors and increments statistics accordingly.
+
+        Args:
+            data (dict): The WebSocket message data
+        """
         try:
             # Update last data received timestamp
             self.last_data_received = time.time()
@@ -356,6 +441,20 @@ class OptionsRiskAnalyzer:
             self.stats['errors'] += 1
 
     def _update_nifty_spot(self, feed_info):
+        """
+        Update Nifty spot price if latest feed data is valid.
+
+        Args:
+            feed_info (dict): Latest feed data from WebSocket
+
+        Returns:
+            None
+
+        Raises:
+            KeyError: If feed_info does not contain required keys
+            ValueError: If spot_price is not a valid number
+            TypeError: If spot_price is not an int or float
+        """
         try:
             full_feed = feed_info.get("fullFeed", {}).get("indexFF", {}) or \
                         feed_info.get("fullFeed", {}).get("marketFF", {})
@@ -375,6 +474,22 @@ class OptionsRiskAnalyzer:
             self.stats['errors'] += 1
 
     def extract_flat(self, feed_data, metadata, ltt):
+        """
+        Extract and flatten relevant fields from raw feed data.
+
+        Args:
+            feed_data (dict): Raw feed data from WebSocket
+            metadata (dict): Instrument metadata
+            ltt (int): Latest timestamp from feed
+
+        Returns:
+            dict: Flattened data dictionary, or None if invalid
+
+        Raises:
+            KeyError: If feed_data or metadata does not contain required keys
+            ValueError: If spot_price is not a valid number
+            TypeError: If spot_price is not an int or float
+        """
         try:
             ltpc = feed_data.get("ltpc", {})
             greeks = feed_data.get("optionGreeks", {})
@@ -462,6 +577,13 @@ class OptionsRiskAnalyzer:
             return None
 
     def print_stats(self):
+        """
+        Prints the current statistics of the analyzer.
+
+        Includes the total number of messages received, processed, and invalid.
+        Also includes the number of stale messages skipped, batches sent to SQS,
+        errors encountered, and the current Nifty spot price.
+        """
         try:
             logger.info("=" * 50)
             logger.info("STATISTICS")
@@ -476,6 +598,13 @@ class OptionsRiskAnalyzer:
             logger.error("Stats error: %s", e)
 
     def shutdown(self):
+        """
+        Shuts down the analyzer.
+
+        Saves the final state of the analyzer to S3 and flushes any remaining
+        records to SQS. Logs the shutdown process.
+
+        """
         logger.info("Shutting down analyzer...")
         self.running = False
         

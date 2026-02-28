@@ -79,29 +79,74 @@ class SSMConfig:
     # Upstox Configuration
     @property
     def API_KEY(self):
+        """
+        Property that returns the Upstox API key from SSM Parameter Store.
+
+        Returns:
+            str: The Upstox API key
+        """
         return self.get_parameter('upstox_api_key')
     
     @property
     def API_SECRET(self):
+        """
+        Property that returns the Upstox API secret from SSM Parameter Store.
+
+        Returns:
+            str: The Upstox API secret
+        """
         return self.get_parameter('upstox_api_secret')
     
     @property
     def REDIRECT_URI(self):
+        """
+        Property that returns the redirect URI from SSM Parameter Store.
+
+        Returns:
+            str: The redirect URI
+        """
         return self.get_parameter('redirect_uri', decrypt=False)
     
     @property
-    def CODE(self):
+    def CODE(self):  
+        """
+        Property that returns the Upstox authorization code from SSM Parameter Store.
+
+        Returns:
+            str: The Upstox authorization code
+        """
         return self.get_parameter('upstox_auth_code')
     
     @property
     def ACCESS_TOKEN(self):
+        """
+        Property that returns the Upstox access token from SSM Parameter Store.
+
+        Returns:
+            str: The Upstox access token
+        """
         return self.get_parameter('upstox_access_token')
     
     @property
     def NIFTY_SPOT(self):
+        """
+        Property that returns the current Nifty spot price from SSM Parameter Store.
+
+        Returns:
+            float: The current Nifty spot price
+        """
         return self.get_parameter('nifty_spot')
     
     def save_access_token(self, token):
+        """
+        Saves the Upstox access token to SSM Parameter Store.
+
+        Args:
+            token (str): The Upstox access token to save
+
+        Returns:
+            bool: True if the token save is successful, False otherwise
+        """
         return self.set_parameter('upstox_access_token', token)
     
     # Neon PostgreSQL Configuration
@@ -116,6 +161,15 @@ class SSMConfig:
         return self.get_parameter('/neon_connection_string/put')
 
     def save_nifty_spot(self, spot_price):
+        """
+        Saves the current Nifty spot price to SSM Parameter Store.
+
+        Args:
+            spot_price (float): The current Nifty spot price to save
+
+        Returns:
+            bool: True if the spot price save is successful, False otherwise
+        """
         return self.set_parameter('nifty_spot', str(spot_price))
 
 # Singleton instance

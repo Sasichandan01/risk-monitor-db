@@ -9,6 +9,15 @@ logger = logging.getLogger(__name__)
 class RiskCalculator:
     
     def __init__(self):
+        """
+        Initialize RiskCalculator instance.
+
+        Sets default Nifty spot price to 24000 and last spot update time to 0.
+
+        Attributes:
+            nifty_spot (int): Last known Nifty spot price
+            last_spot_update (float): Last update time for Nifty spot price
+        """
         self.nifty_spot = 24000
         """
         Initialize RiskCalculator instance.
