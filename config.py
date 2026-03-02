@@ -85,7 +85,7 @@ class SSMConfig:
         Returns:
             str: The Upstox API key
         """
-        return self.get_parameter('upstox_api_key')
+        return self.get_parameter('upstox_api_key','True')
     
     @property
     def API_SECRET(self):
@@ -95,7 +95,7 @@ class SSMConfig:
         Returns:
             str: The Upstox API secret
         """
-        return self.get_parameter('upstox_api_secret')
+        return self.get_parameter('upstox_api_secret','True')
     
     @property
     def REDIRECT_URI(self):
@@ -115,7 +115,7 @@ class SSMConfig:
         Returns:
             str: The Upstox authorization code
         """
-        return self.get_parameter('upstox_auth_code')
+        return self.get_parameter('upstox_auth_code','True')
     
     @property
     def ACCESS_TOKEN(self):
@@ -125,7 +125,7 @@ class SSMConfig:
         Returns:
             str: The Upstox access token
         """
-        return self.get_parameter('upstox_access_token')
+        return self.get_parameter('upstox_access_token','True')
     
     @property
     def NIFTY_SPOT(self):
@@ -153,12 +153,12 @@ class SSMConfig:
     @property
     def NEON_CONNECTION_STRING_CALL(self):
         """Get Neon connection string for CALL options"""
-        return self.get_parameter('/neon_connection_string/call')
+        return self.get_parameter('/neon_connection_string/call','True')
     
     @property
     def NEON_CONNECTION_STRING_PUT(self):
         """Get Neon connection string for PUT options"""
-        return self.get_parameter('/neon_connection_string/put')
+        return self.get_parameter('/neon_connection_string/put','True')
 
     def save_nifty_spot(self, spot_price):
         """
