@@ -282,9 +282,9 @@ class OptionsRiskAnalyzer:
         while self.running:
             try:
                 now = datetime.now(IST)
-                if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
-                    logger.info("Market closed at %s — stopping batch writer", now.strftime('%H:%M:%S'))
-                    break
+                # if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
+                #     logger.info("Market closed at %s — stopping batch writer", now.strftime('%H:%M:%S'))
+                #     break
 
                 self._flush_batch()
                 time.sleep(30)
