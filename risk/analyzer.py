@@ -226,7 +226,7 @@ class OptionsRiskAnalyzer:
                     # logger.info("Got ltt: %s for %s", ltt, instrument_key)  # ADD THIS
                     
                     if not self._is_valid_timestamp(ltt):
-                        logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
+                        # logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
                         self.stats['stale_skipped'] += 1
                         continue
 
