@@ -20,10 +20,6 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 class StockDataFetcher:
-    """
-    Handles Upstox API communication, WebSocket streaming, and instrument management.
-    Subscribes to option chain via WebSocket and refreshes subscription every 30 minutes.
-    """
 
     def __init__(
         self,
@@ -33,33 +29,6 @@ class StockDataFetcher:
         s3_bucket='nse-instruments-data',
         s3_key='instruments/nse_instruments.csv'
     ):
-        """
-        Initializes StockDataFetcher instance.
-
-        Args:
-            config (SSMConfig): SSMConfig instance
-            aws_region (str, optional): AWS region name. Defaults to 'ap-south-1'.
-            instruments_file (str, optional): File path for local instruments list. Defaults to '/mnt/tmpfs/nse_instruments.csv'.
-            s3_bucket (str, optional): S3 bucket name for instruments list. Defaults to 'nse-instruments-data'.
-            s3_key (str, optional): S3 key for instruments list. Defaults to 'instruments/nse_instruments.csv'.
-
-        Attributes:
-            config (SSMConfig): SSMConfig instance
-            aws_region (str): AWS region name
-            instruments_file (str): File path for local instruments list
-            s3_bucket (str): S3 bucket name for instruments list
-            s3_key (str): S3 key for instruments list
-            access_token (str): Upstox API access token
-            instrument_key (str): Key for Nifty index instrument metadata
-            subscribed_instruments (list): List of subscribed instruments
-            instrument_metadata (dict): Dictionary of instrument metadata
-            nifty_spot (float): Current Nifty index spot price
-            running (bool): Flag indicating if the fetcher is running
-            _api_client (upstox_client.UpstoxClient): Upstox API client
-            _s3 (boto3.client): Boto3 S3 client
-            _instruments_map (dict): Dictionary of instrument metadata
-            _streamer (upstox_client.UpstoxStreamClient): Upstox WebSocket stream client
-        """
         self.config = config
         self.aws_region = aws_region
         self.instruments_file = instruments_file
@@ -79,16 +48,8 @@ class StockDataFetcher:
 
     @property
     def s3(self):
-        """
-        Property that returns the Boto3 S3 client object.
-
-        The client is initialized lazily when this property is accessed for the first time.
-        If running on EC2, uses IAM role for S3 access. Otherwise, uses the specified AWS profile.
-        If the S3 client initialization fails, raises an exception.
-        """
         if self._s3 is None:
             try:
-
                 my_config = Config(region_name=self.aws_region, signature_version='s3v4')
                 self._s3 = boto3.client('s3', config=my_config)
                 
@@ -109,15 +70,6 @@ class StockDataFetcher:
         return self._s3
 
     def load_token(self):
-        """
-        Loads the access token from the configuration and checks its validity.
-
-        If the token is not found, has an invalid format or has expired, it returns False.
-        If the token is valid, it sets the access_token attribute and returns True.
-
-        Returns:
-            bool: True if the token is valid, False otherwise
-        """
         try:
             token = self.config.ACCESS_TOKEN
             if not token:
@@ -145,13 +97,6 @@ class StockDataFetcher:
             return False
 
     def save_token(self):
-        
-        """
-        Saves the access token to the configuration.
-
-        Returns:
-            bool: True if the token is saved successfully, False otherwise
-        """
         try:
             if self.config.save_access_token(self.access_token):
                 logger.info("Token successfully saved to SSM")
@@ -164,20 +109,6 @@ class StockDataFetcher:
             return False
 
     def login(self):
-        """
-        Log in to Upstox and retrieve an access token.
-
-        POST request to Upstox API with authorization code, client ID, client secret, and redirect URI.
-        If successful, save the access token to SSM and load the NSE FO map.
-
-        Returns:
-            bool: True if login is successful, False otherwise.
-
-        Raises:
-            requests.exceptions.RequestException: If there is a network/HTTP error.
-            KeyError: If there is a key error in the response data.
-            json.JSONDecodeError: If there is a parsing error in the response data.
-        """
         headers = {
             'accept': 'application/json',
             'Content-Type': 'application/x-www-form-urlencoded'
@@ -210,18 +141,6 @@ class StockDataFetcher:
             return False
 
     def download_instruments_from_s3(self):
-        """
-        Downloads the instruments file from S3.
-
-        Parameters:
-            None
-
-        Returns:
-            bool: True if download is successful, False otherwise
-
-        Raises:
-            ClientError: If S3 access is denied or the object is not found
-        """
         local_path = Path(self.instruments_file)
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -247,18 +166,6 @@ class StockDataFetcher:
             return False
 
     def ensure_instruments_csv(self):
-        
-        """
-        Ensures that the NSE FO instruments CSV file is present in the local file system.
-
-        If the file does not exist, it downloads a fresh copy from S3. If the download fails,
-        it raises a FileNotFoundError.
-
-        The method does not return any value.
-
-        Raises:
-            FileNotFoundError: If the file does not exist or the download from S3 fails.
-        """
         csv_path = Path(self.instruments_file)
         try:
             if csv_path.exists():
@@ -272,20 +179,6 @@ class StockDataFetcher:
             raise
 
     def load_nse_fo_map(self):
-        """
-        Loads the NSE FO instrument mapping from the CSV file into memory.
-
-        If the map is already loaded, it returns the cached map.
-
-        If the file does not exist, it raises a FileNotFoundError.
-
-        If there is an error while parsing the CSV, it raises a csv.Error.
-
-        If there is a KeyError or ValueError while creating the mapping, it raises that error.
-
-        Returns:
-            dict: The mapping of (tradingsymbol, option_type, exchange) to instrument metadata.
-        """
         if self._instruments_map is not None:
             logger.info("Using cached instruments map - %d entries", len(self._instruments_map))
             return self._instruments_map
@@ -321,7 +214,6 @@ class StockDataFetcher:
             raise
 
     def get_all_expiry_dates_api(self, instrument_key, count=4):
-        
         url = "https://api.upstox.com/v2/option/contract?instrument_key=%s" % instrument_key
         headers = {
             "Authorization": f"Bearer {self.access_token}",
@@ -342,28 +234,14 @@ class StockDataFetcher:
         except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError) as e:
             logger.error("Get expiry dates error: %s", e)
             return []
-        
+
     def get_filtered_option_instruments(self, atm_range=15):
-
-        """
-        Retrieves the filtered list of call and put option instruments for the Nifty 50 index.
-
-        The function fetches the latest available Nifty 50 index spot price, and the ATM (at-the-money) strike price.
-        It then fetches the option chain for the next four expiries, filters out strikes that are outside the given ATM range,
-        and returns the filtered list of call and put option instruments.
-
-        Args:
-            atm_range (int, optional): The range of strikes to consider around the ATM strike (default=15).
-
-        Returns:
-            tuple: A tuple containing the filtered list of call option instruments, the filtered list of put option instruments,
-            and a dictionary containing the Nifty 50 index spot price, the ATM strike price, and the instrument metadata.
-        """
         try:
             if self._api_client is None:
                 configuration = upstox_client.Configuration()
                 configuration.access_token = self.access_token
-                self._api_client = upstox_client.ApiClient(configuration)            
+                self._api_client = upstox_client.ApiClient(configuration)
+            
             configuration = upstox_client.Configuration()
             configuration.access_token = self.access_token
             api_client = upstox_client.ApiClient(configuration)
@@ -403,6 +281,8 @@ class StockDataFetcher:
                         opt_data = row.get(side_key)
                         if opt_data:
                             instr_key = opt_data.get('instrument_key')
+                            symbol = opt_data.get('tradingsymbol', '')
+                            
                             if instr_key:
                                 if side_label == 'CE':
                                     all_call.append(instr_key)
@@ -410,14 +290,24 @@ class StockDataFetcher:
                                     all_put.append(instr_key)
 
                                 all_metadata[instr_key] = {
-                                    'symbol': opt_data.get('tradingsymbol', ''),
+                                    'symbol': symbol,
                                     'strike': strike,
                                     'expiry': expiry_str,
                                     'option_type': side_label,
                                     'underlying_spot': nifty_spot
                                 }
+                                
+                                csv_key = (symbol, side_label, 'NSE_FO')
+                                if csv_key in self._instruments_map:
+                                    csv_data = self._instruments_map[csv_key]
+                                    all_metadata[instr_key].update({
+                                        'exchange_token': csv_data.get('exchange_token'),
+                                        'exchange': csv_data.get('exchange')
+                                    })
 
             logger.info("Total filtered instruments: %d", len(all_call) + len(all_put))
+            logger.info("Metadata populated with %d entries", len(all_metadata))
+            
             return all_call, all_put, {
                 'nifty_spot': nifty_spot,
                 'atm_strike': atm_strike,
@@ -428,7 +318,6 @@ class StockDataFetcher:
             return [], [], {}
 
     def _start_subscription_refresher(self, atm_range=15):
-        
         def refresher():
             while self.running:
                 time.sleep(1800)
@@ -460,18 +349,6 @@ class StockDataFetcher:
         threading.Thread(target=refresher, daemon=True).start()
 
     def start_polling(self, on_message_callback, atm_range=15):
-        """
-        Starts the WebSocket stream for real-time data.
-
-        Parameters:
-            on_message_callback (callable): Callback function to process WebSocket messages.
-            atm_range (int): The ATM range for filtering option instruments.
-
-        Raises:
-            ValueError: If no access token is available.
-            RuntimeError: If an error occurs while starting the WebSocket stream.
-            upstox_client.rest.ApiException: If an error occurs while subscribing to instruments.
-        """
         try:
             if not self.access_token:
                 logger.error("No access token available")
@@ -546,13 +423,4 @@ class StockDataFetcher:
             raise
 
     def get_instrument_metadata(self, instrument_key):
-        """
-        Retrieves the metadata for a given instrument key.
-
-        Args:
-            instrument_key (str): The key of the instrument in the metadata dictionary.
-
-        Returns:
-            dict: The metadata for the given instrument key if present, otherwise an empty dictionary.
-        """
         return self.instrument_metadata.get(instrument_key, {})

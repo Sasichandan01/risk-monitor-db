@@ -383,20 +383,7 @@ class OptionsRiskAnalyzer:
         return feed_time.replace(second=next_sec, microsecond=0)
 
     def on_message_handler(self, data):
-        """
-        Handles WebSocket messages from Upstox API.
-
-        Extracts feed information, instrument metadata, and LTT timestamp from the
-        message. If the LTT timestamp is valid, processes the feed information and
-        updates the latest data for the instrument.
-
-        Logs errors and increments statistics accordingly.
-
-        Args:
-            data (dict): The WebSocket message data
-        """
         try:
-            # Update last data received timestamp
             self.last_data_received = time.time()
             
             feeds = data.get("feeds", {})
@@ -420,8 +407,6 @@ class OptionsRiskAnalyzer:
 
                     metadata = self.fetcher.get_instrument_metadata(instrument_key)
                     if not metadata:
-                        if len(self.fetcher.instrument_metadata) == 0:
-                            logger.warning("Metadata not yet populated - waiting")
                         continue
 
                     full_feed['instrument_key'] = instrument_key
@@ -442,7 +427,6 @@ class OptionsRiskAnalyzer:
         except (KeyError, ValueError, TypeError) as e:
             logger.error("Message handler error: %s", e)
             self.stats['errors'] += 1
-
     def _update_nifty_spot(self, feed_info):
         """
         Update Nifty spot price if latest feed data is valid.
