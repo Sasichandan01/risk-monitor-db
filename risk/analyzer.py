@@ -68,17 +68,24 @@ class OptionsRiskAnalyzer:
         sleep_secs = 30 - remainder if remainder != 0 else 30
         logger.info("Aligning to next 30s boundary — sleeping %ds", sleep_secs)
         time.sleep(sleep_secs)
-
         logger.info("Batch writer aligned — starting at %s", datetime.now(IST).strftime('%H:%M:%S'))
 
+        flush_count = 0
         while self.running:
             try:
                 now = datetime.now(IST)
-                if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
-                    logger.info("Market closed at %s — stopping batch writer", now.strftime('%H:%M:%S'))
-                    break
+                # if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
+                #     logger.info("Market closed at %s — stopping batch writer", now.strftime('%H:%M:%S'))
+                #     break
 
+                flush_count += 1
+                logger.info("="*60)
+                logger.info("FLUSH CYCLE #%d | Time: %s", flush_count, now.strftime('%H:%M:%S'))
+                logger.info("="*60)
+                
                 self._flush_batch()
+                
+                logger.info("Waiting 30s for next flush...")
                 time.sleep(30)
 
             except Exception as e:
@@ -204,12 +211,15 @@ class OptionsRiskAnalyzer:
                         continue
 
                     full_feed['instrument_key'] = instrument_key
-
+                    feed_count += 1
                     self.executor.submit(self._process_feed, instrument_key, full_feed, metadata, ltt)
 
                 except (KeyError, ValueError, TypeError) as e:
                     logger.error("Feed queueing error for %s: %s", instrument_key, e)
                     self.stats['errors'] += 1
+            if feed_count > 0:
+                logger.info("Submitted %d feeds for processing | Metadata buffer: %d", 
+                        feed_count, len(self.instrument_metadata))
 
         except (KeyError, ValueError, TypeError) as e:
             logger.error("Message handler error: %s", e)
