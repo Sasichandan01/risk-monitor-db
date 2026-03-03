@@ -195,29 +195,38 @@ class OptionsRiskAnalyzer:
                 return
             logger.info("Received WebSocket message with %d feeds", len(feeds))
             for instrument_key, feed_info in feeds.items():
+                logger.info("Processing key: %s", instrument_key)  # ADD THIS
                 try:
                     if 'NSE_INDEX|Nifty 50' in instrument_key or 'Nifty 50' in instrument_key:
+                        logger.info("Nifty index - updating spot")  # ADD THIS
                         self._update_nifty_spot(feed_info)
                         continue
 
                     full_feed = feed_info.get("fullFeed", {}).get("marketFF", {})
                     if not full_feed:
+                        logger.warning("No marketFF for %s", instrument_key)  # ADD THIS
                         continue
 
                     ltt = full_feed.get("ltpc", {}).get("ltt")
+                    logger.info("Got ltt: %s for %s", ltt, instrument_key)  # ADD THIS
+                    
                     if not self._is_valid_timestamp(ltt):
+                        logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
                         self.stats['stale_skipped'] += 1
                         continue
 
                     metadata = self.fetcher.get_instrument_lookup(instrument_key)
+                    logger.info("Got metadata: %s for %s", bool(metadata), instrument_key)  # ADD THIS
+                    
                     if not metadata:
+                        logger.warning("No metadata for %s", instrument_key)  # ADD THIS
                         self.stats['not_subscribed'] += 1
                         continue
 
+                    logger.info("About to submit %s to executor", instrument_key)  # ADD THIS
                     full_feed['instrument_key'] = instrument_key
-                    
                     self.executor.submit(self._process_feed, instrument_key, full_feed, metadata, ltt)
-                    logger.info("Submitted %s to ThreadPool", metadata.get('symbol'))
+                    logger.info("Submitted %s to executor", instrument_key)  # ADD THIS
                     feed_count += 1
                 except (KeyError, ValueError, TypeError) as e:
                     logger.error("Feed queueing error for %s: %s", instrument_key, e)
