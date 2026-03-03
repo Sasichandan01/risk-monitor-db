@@ -118,13 +118,13 @@ class OptionsRiskAnalyzer:
                 now = datetime.now(IST)
                 
                 # Only check during market hours (9:15 AM - 3:30 PM)
-                if now.hour < 9 or (now.hour == 9 and now.minute < 15):
-                    time.sleep(30)
-                    continue
+                # if now.hour < 9 or (now.hour == 9 and now.minute < 15):
+                #     time.sleep(30)
+                #     continue
                     
-                if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
-                    time.sleep(30)
-                    continue
+                # if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
+                #     time.sleep(30)
+                #     continue
                 
                 # Check if data is coming
                 time_since_last = time.time() - self.last_data_received
