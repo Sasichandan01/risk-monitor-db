@@ -177,32 +177,6 @@ class StockDataFetcher:
             logger.error("File system error: %s", e)
             raise
 
-    def lookup_in_csv(self, symbol, option_type='CE'):
-        """Read CSV file and find matching instrument"""
-        try:
-            path = Path(self.instruments_file)
-            if not path.exists():
-                logger.error("Instruments file not found at %s", path)
-                return None
-            
-            with path.open(newline='', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    if (row["tradingsymbol"].strip() == symbol and 
-                        row["option_type"].strip() == option_type and 
-                        row["exchange"].strip() == "NSE_FO"):
-                        return {
-                            "instrument_key": row["instrument_key"].strip(),
-                            "exchange_token": int(row["exchange_token"].strip()),
-                            "symbol": row["tradingsymbol"].strip(),
-                            "option_type": row["option_type"].strip(),
-                            "exchange": row["exchange"].strip(),
-                        }
-            return None
-        except (OSError, csv.Error, KeyError, ValueError) as e:
-            logger.error("CSV lookup error for %s %s: %s", symbol, option_type, e)
-            return None
-
     def get_all_expiry_dates_api(self, instrument_key, count=4):
         url = "https://api.upstox.com/v2/option/contract?instrument_key=%s" % instrument_key
         headers = {

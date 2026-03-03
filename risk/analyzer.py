@@ -2,7 +2,6 @@ import threading
 import time
 import logging
 import json
-import queue
 from datetime import datetime, timezone, timedelta
 from botocore.exceptions import ClientError
 from concurrent.futures import ThreadPoolExecutor
@@ -28,14 +27,15 @@ class OptionsRiskAnalyzer:
         self.config = config
         self.risk_calculator = RiskCalculator()
         self.instrument_metadata = {}
-        self.latest_data_lock = threading.Lock()
+        self.metadata_lock = threading.Lock()
         self.running = True
         self.last_spot_ssm_write = 0
-        self.executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="RiskCalc")
+        self.executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="RiskCalc")
         self.stats = {
             'total_received': 0,
             'invalid_data': 0,
             'stale_skipped': 0,
+            'not_subscribed': 0,
             'processed': 0,
             'batches_sent': 0,
             'nifty_updates': 0,
@@ -71,25 +71,25 @@ class OptionsRiskAnalyzer:
 
         logger.info("Batch writer aligned — starting at %s", datetime.now(IST).strftime('%H:%M:%S'))
 
-        # while self.running:
-        #     try:
-        #         now = datetime.now(IST)
-        #         if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
-        #             logger.info("Market closed at %s — stopping batch writer", now.strftime('%H:%M:%S'))
-        #             break
+        while self.running:
+            try:
+                now = datetime.now(IST)
+                if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
+                    logger.info("Market closed at %s — stopping batch writer", now.strftime('%H:%M:%S'))
+                    break
 
-        #         self._flush_batch()
-        #         time.sleep(30)
+                self._flush_batch()
+                time.sleep(30)
 
-        #     except Exception as e:
-        #         logger.error("Batch writer error — continuing: %s", e)
-        #         self.stats['errors'] += 1
-        #         time.sleep(30)
+            except Exception as e:
+                logger.error("Batch writer error — continuing: %s", e)
+                self.stats['errors'] += 1
+                time.sleep(30)
 
     def _flush_batch(self):
         snapshot = {}
         try:
-            with self.latest_data_lock:
+            with self.metadata_lock:
                 if not self.instrument_metadata:
                     logger.info("Nothing to flush at %s", datetime.now(IST).strftime('%H:%M:%S'))
                     return
@@ -100,8 +100,7 @@ class OptionsRiskAnalyzer:
             total_records = len(records)
             logger.info("Flushing %d records at %s", total_records, datetime.now(IST).strftime('%H:%M:%S'))
 
-            # Split into batches if needed (SQS limit: 256KB per message, use 200KB to be safe)
-            MAX_BATCH_SIZE_KB = 200
+            MAX_BATCH_SIZE_KB = 500
             batches = []
             current_batch = []
             current_size = 0
@@ -122,7 +121,6 @@ class OptionsRiskAnalyzer:
 
             logger.info("Split into %d batches", len(batches))
 
-            # Send each batch to SQS
             for batch_num, batch in enumerate(batches, 1):
                 payload = json.dumps({
                     'batch_time': datetime.now(IST).isoformat(),
@@ -133,7 +131,7 @@ class OptionsRiskAnalyzer:
 
                 payload_kb = len(payload.encode('utf-8')) / 1024
                 logger.info("Batch %d/%d - size: %.1fKB - records: %d", 
-                        batch_num, len(batches), payload_kb, len(batch))
+                           batch_num, len(batches), payload_kb, len(batch))
 
                 try:
                     sqs.send_message(
@@ -144,8 +142,7 @@ class OptionsRiskAnalyzer:
                     logger.info("Batch %d/%d sent to SQS", batch_num, len(batches))
                 except ClientError as e:
                     logger.error("SQS send failed for batch %d/%d: %s", batch_num, len(batches), e)
-                    # Return failed batch records to buffer
-                    with self.latest_data_lock:
+                    with self.metadata_lock:
                         for record in batch:
                             key = record.get('instrument_key')
                             if key and key not in self.instrument_metadata:
@@ -157,6 +154,7 @@ class OptionsRiskAnalyzer:
         except (ValueError, TypeError) as e:
             logger.error("Flush error: %s", e)
             self.stats['errors'] += 1
+
     def _is_valid_timestamp(self, ltt_ms):
         if ltt_ms is None:
             return False
@@ -165,7 +163,6 @@ class OptionsRiskAnalyzer:
             now_ts = datetime.now(IST).timestamp()
             if ltt_ts < MIN_VALID_TS:
                 return False
-
             if now_ts - ltt_ts > 60:
                 return False
             return True
@@ -203,11 +200,11 @@ class OptionsRiskAnalyzer:
 
                     metadata = self.fetcher.get_instrument_lookup(instrument_key)
                     if not metadata:
+                        self.stats['not_subscribed'] += 1
                         continue
 
                     full_feed['instrument_key'] = instrument_key
 
-                    # Submit to thread pool for parallel processing
                     self.executor.submit(self._process_feed, instrument_key, full_feed, metadata, ltt)
 
                 except (KeyError, ValueError, TypeError) as e:
@@ -219,18 +216,15 @@ class OptionsRiskAnalyzer:
             self.stats['errors'] += 1
 
     def _process_feed(self, instrument_key, full_feed, metadata, ltt):
-        """Process feed in parallel thread - does heavy calculations"""
         try:
             flat = self.extract_flat(full_feed, metadata, ltt)
             if not flat:
                 return
 
-            with self.latest_data_lock:
+            with self.metadata_lock:
                 self.instrument_metadata[instrument_key] = flat
 
             self.stats['processed'] += 1
-            logger.info("Processed %s | LTP: %s | Risk: %s | Rec: %s", 
-                       flat['symbol'], flat['ltp'], flat['overall_risk_score'], flat['recommendation'])
 
         except (KeyError, ValueError, TypeError) as e:
             logger.error("Feed processing error for %s: %s", instrument_key, e)
@@ -299,14 +293,11 @@ class OptionsRiskAnalyzer:
                 'rho': greeks.get('rho')
             }
 
-            logger.info("Cleaning data for %s", trading_symbol)
             cleaned = DataCleaner.clean_option_data(raw_data, self.risk_calculator.nifty_spot)
             if not cleaned:
                 self.stats['invalid_data'] += 1
                 return None
 
-            logger.info("Calculating risk for %s | Strike: %s | LTP: %s", 
-                       trading_symbol, cleaned['strike'], cleaned.get('ltp', 0))
             risk = self.risk_calculator.calculate_risk_metrics(cleaned)
 
             flat = {
@@ -351,8 +342,9 @@ class OptionsRiskAnalyzer:
             logger.info("STATISTICS")
             logger.info("Received: %d | Processed: %d | Invalid: %d",
                         self.stats['total_received'], self.stats['processed'], self.stats['invalid_data'])
-            logger.info("Stale Skipped: %d | Batches Sent: %d | Errors: %d",
-                        self.stats['stale_skipped'], self.stats['batches_sent'], self.stats['errors'])
+            logger.info("Stale: %d | Not Subscribed: %d | Batches: %d | Errors: %d",
+                        self.stats['stale_skipped'], self.stats['not_subscribed'], 
+                        self.stats['batches_sent'], self.stats['errors'])
             logger.info("Nifty: %.2f | Metadata: %d",
                         self.risk_calculator.nifty_spot, len(self.instrument_metadata))
             logger.info("=" * 50)
@@ -365,7 +357,7 @@ class OptionsRiskAnalyzer:
         self.executor.shutdown(wait=True, cancel_futures=False)
         time.sleep(1)
 
-        with self.latest_data_lock:
+        with self.metadata_lock:
             if self.instrument_metadata:
                 logger.info("Flushing %d remaining records on shutdown...", len(self.instrument_metadata))
                 self._flush_batch()
