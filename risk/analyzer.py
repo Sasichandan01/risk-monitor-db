@@ -185,10 +185,12 @@ class OptionsRiskAnalyzer:
         return feed_time.replace(second=next_sec, microsecond=0)
 
     def on_message_handler(self, data):
+        logger.info("WebSocket message received") 
         try:
             feed_count=0
             feeds = data.get("feeds", {})
             if not feeds:
+                logger.info("Message not recieved")
                 return
             logger.info("Received WebSocket message with %d feeds", len(feeds))
             for instrument_key, feed_info in feeds.items():
