@@ -1,4 +1,5 @@
 import sys
+import time
 import signal
 import logging
 from config import config
@@ -35,8 +36,14 @@ def main():
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+    logger.info("MAIN: before analyzer.start()")
 
     analyzer.start()
+
+    logger.info("MAIN: after analyzer.start() — if you see this, start() returned")
+
+    while True:
+        time.sleep(5)
 
 if __name__ == "__main__":
     main()

@@ -19,8 +19,14 @@ MIN_VALID_TS = datetime(2025, 1, 1, tzinfo=IST).timestamp()
 sqs = boto3.client('sqs', region_name='ap-south-1')
 INSERT_QUEUE_URL = 'https://sqs.ap-south-1.amazonaws.com/079975324269/OptionRiskQueue'
 
+import atexit
 
+def on_exit():
+    logger.error("⚠️ INTERPRETER IS SHUTTING DOWN")
+
+atexit.register(on_exit)
 class OptionsRiskAnalyzer:
+
 
     def __init__(self, fetcher, config):
         self.fetcher = fetcher
@@ -235,6 +241,10 @@ class OptionsRiskAnalyzer:
 
                     logger.info("About to submit %s to executor", instrument_key)  # ADD THIS
                     full_feed['instrument_key'] = instrument_key
+                    logger.info("Executor exists: %s | Running: %s | Shutting down flag: %s",
+                            bool(self.executor),
+                            self.running,
+                            getattr(self.executor, "_shutdown", None))
                     self.executor.submit(self._process_feed, instrument_key, full_feed, metadata, ltt)
                     logger.info("Submitted %s to executor", instrument_key)  # ADD THIS
                     feed_count += 1
