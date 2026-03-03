@@ -207,11 +207,10 @@ class OptionsRiskAnalyzer:
             feed_count=0
             feeds = data.get("feeds", {})
             if not feeds:
-                logger.info("Message not recieved")
                 return
-            logger.info("Received WebSocket message with %d feeds", len(feeds))
+
             for instrument_key, feed_info in feeds.items():
-                logger.info("Processing key: %s", instrument_key)  # ADD THIS
+
                 try:
                     if 'NSE_INDEX|Nifty 50' in instrument_key or 'Nifty 50' in instrument_key:
                         logger.info("Nifty index - updating spot")  # ADD THIS
@@ -224,36 +223,31 @@ class OptionsRiskAnalyzer:
                         continue
 
                     ltt = full_feed.get("ltpc", {}).get("ltt")
-                    logger.info("Got ltt: %s for %s", ltt, instrument_key)  # ADD THIS
+                    # logger.info("Got ltt: %s for %s", ltt, instrument_key)  # ADD THIS
                     
-                    # if not self._is_valid_timestamp(ltt):
-                    #     logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
-                    #     self.stats['stale_skipped'] += 1
-                    #     continue
+                    if not self._is_valid_timestamp(ltt):
+                        logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
+                        self.stats['stale_skipped'] += 1
+                        continue
 
                     metadata = self.fetcher.get_instrument_lookup(instrument_key)
-                    logger.info("Got metadata: %s for %s", bool(metadata), instrument_key)  # ADD THIS
+                    # logger.info("Got metadata: %s for %s", bool(metadata), instrument_key)  # ADD THIS
                     
                     if not metadata:
                         logger.warning("No metadata for %s", instrument_key)  # ADD THIS
                         self.stats['not_subscribed'] += 1
                         continue
 
-                    logger.info("About to submit %s to executor", instrument_key)  # ADD THIS
+                    # logger.info("About to submit %s to executor", instrument_key)  # ADD THIS
                     full_feed['instrument_key'] = instrument_key
-                    logger.info("Executor exists: %s | Running: %s | Shutting down flag: %s",
-                            bool(self.executor),
-                            self.running,
-                            getattr(self.executor, "_shutdown", None))
+
                     self.executor.submit(self._process_feed, instrument_key, full_feed, metadata, ltt)
                     logger.info("Submitted %s to executor", instrument_key)  # ADD THIS
                     feed_count += 1
                 except (KeyError, ValueError, TypeError) as e:
                     logger.error("Feed queueing error for %s: %s", instrument_key, e)
                     self.stats['errors'] += 1
-            if feed_count > 0:
-                logger.info("Submitted %d feeds for processing | Metadata buffer: %d", 
-                        feed_count, len(self.instrument_metadata))
+
 
         except (KeyError, ValueError, TypeError) as e:
             logger.error("Message handler error: %s", e)
@@ -261,7 +255,6 @@ class OptionsRiskAnalyzer:
 
     def _process_feed(self, instrument_key, full_feed, metadata, ltt):
         try:
-            logger.info("Processing feed for %s", metadata.get('symbol', instrument_key))  # ADD THIS
         
             flat = self.extract_flat(full_feed, metadata, ltt)
             if not flat:
