@@ -56,12 +56,12 @@ class OptionsRiskAnalyzer:
     def _batch_writer(self):
         logger.info("Batch writer started — aligning to 30s market boundaries")
 
-        while self.running:
-            now = datetime.now(IST)
-            if now.hour > 9 or (now.hour == 9 and now.minute >= 15):
-                break
-            logger.info("Waiting for market open — current time: %s", now.strftime('%H:%M:%S'))
-            time.sleep(10)
+        # while self.running:
+        #     now = datetime.now(IST)
+        #     if now.hour > 9 or (now.hour == 9 and now.minute >= 15):
+        #         break
+        #     logger.info("Waiting for market open — current time: %s", now.strftime('%H:%M:%S'))
+        #     time.sleep(10)
 
         now = datetime.now(IST)
         remainder = now.second % 30
@@ -221,6 +221,18 @@ class OptionsRiskAnalyzer:
             if not flat:
                 return
 
+            risk_score = flat.get('overall_risk_score', 0)
+            recommendation = flat.get('recommendation', 'HOLD')
+            symbol = flat.get('symbol', '')
+            ltp = flat.get('ltp', 0)
+
+            if risk_score > 75:
+                logger.warning("HIGH RISK: %s | Score: %.2f | Rec: %s | LTP: %.2f", 
+                            symbol, risk_score, recommendation, ltp)
+            elif risk_score > 50:
+                logger.info("MEDIUM RISK: %s | Score: %.2f | Rec: %s | LTP: %.2f", 
+                        symbol, risk_score, recommendation, ltp)
+
             with self.metadata_lock:
                 self.instrument_metadata[instrument_key] = flat
 
@@ -229,7 +241,6 @@ class OptionsRiskAnalyzer:
         except (KeyError, ValueError, TypeError) as e:
             logger.error("Feed processing error for %s: %s", instrument_key, e)
             self.stats['errors'] += 1
-
     def _update_nifty_spot(self, feed_info):
         try:
             full_feed = feed_info.get("fullFeed", {}).get("indexFF", {}) or \
