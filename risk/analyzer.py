@@ -83,7 +83,8 @@ class OptionsRiskAnalyzer:
         """
         try:
             logger.info("Starting Options Risk Analyzer...")
-            
+            logger.info("Fetcher has %d instruments in metadata", len(self.fetcher.instrument_metadata))  # ADD THIS
+
             # Load backup from S3 if exists
             self._load_from_s3()
             
@@ -419,6 +420,7 @@ class OptionsRiskAnalyzer:
 
                     metadata = self.fetcher.get_instrument_metadata(instrument_key)
                     if not metadata:
+                        logger.warning("No metadata for instrument: %s", instrument_key)  # ADD THIS
                         continue
 
                     full_feed['instrument_key'] = instrument_key
