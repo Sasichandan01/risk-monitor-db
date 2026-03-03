@@ -186,7 +186,7 @@ class OptionsRiskAnalyzer:
 
     def on_message_handler(self, data):
         logger.info("WebSocket message received") 
-        print(data)
+        # print(data)
         try:
             feed_count=0
             feeds = data.get("feeds", {})
@@ -217,6 +217,7 @@ class OptionsRiskAnalyzer:
                     full_feed['instrument_key'] = instrument_key
                     
                     self.executor.submit(self._process_feed, instrument_key, full_feed, metadata, ltt)
+                    logger.info("Submitted %s to ThreadPool", metadata.get('symbol'))
                     feed_count += 1
                 except (KeyError, ValueError, TypeError) as e:
                     logger.error("Feed queueing error for %s: %s", instrument_key, e)
