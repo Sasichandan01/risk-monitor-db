@@ -186,6 +186,7 @@ class OptionsRiskAnalyzer:
 
     def on_message_handler(self, data):
         logger.info("WebSocket message received") 
+        print(data)
         try:
             feed_count=0
             feeds = data.get("feeds", {})
