@@ -211,9 +211,9 @@ class OptionsRiskAnalyzer:
                         continue
 
                     full_feed['instrument_key'] = instrument_key
-                    feed_count += 1
+                    
                     self.executor.submit(self._process_feed, instrument_key, full_feed, metadata, ltt)
-
+                    feed_count += 1
                 except (KeyError, ValueError, TypeError) as e:
                     logger.error("Feed queueing error for %s: %s", instrument_key, e)
                     self.stats['errors'] += 1
