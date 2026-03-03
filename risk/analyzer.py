@@ -168,9 +168,15 @@ class OptionsRiskAnalyzer:
         try:
             ltt_ts = int(ltt_ms) / 1000
             now_ts = datetime.now(IST).timestamp()
+            
+            logger.info("Timestamp check: ltt=%s, now=%s, diff=%s", ltt_ts, now_ts, now_ts - ltt_ts)  # ADD THIS
+            
             if ltt_ts < MIN_VALID_TS:
+                logger.warning("Timestamp too old: %s < %s", ltt_ts, MIN_VALID_TS)  # ADD THIS
                 return False
+            
             if now_ts - ltt_ts > 60:
+                logger.warning("Timestamp stale: %s - %s = %s seconds", now_ts, ltt_ts, now_ts - ltt_ts)  # ADD THIS
                 return False
             return True
         except (ValueError, TypeError):
@@ -210,10 +216,10 @@ class OptionsRiskAnalyzer:
                     ltt = full_feed.get("ltpc", {}).get("ltt")
                     logger.info("Got ltt: %s for %s", ltt, instrument_key)  # ADD THIS
                     
-                    if not self._is_valid_timestamp(ltt):
-                        logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
-                        self.stats['stale_skipped'] += 1
-                        continue
+                    # if not self._is_valid_timestamp(ltt):
+                    #     logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
+                    #     self.stats['stale_skipped'] += 1
+                    #     continue
 
                     metadata = self.fetcher.get_instrument_lookup(instrument_key)
                     logger.info("Got metadata: %s for %s", bool(metadata), instrument_key)  # ADD THIS
