@@ -30,7 +30,7 @@ class OptionsRiskAnalyzer:
         self.metadata_lock = threading.Lock()
         self.running = True
         self.last_spot_ssm_write = 0
-        self.executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="RiskCalc")
+        self.executor = None
         self.stats = {
             'total_received': 0,
             'invalid_data': 0,
@@ -45,6 +45,10 @@ class OptionsRiskAnalyzer:
     def start(self):
         try:
             logger.info("Starting Options Risk Analyzer...")
+            
+            # Create executor HERE, not in __init__
+            self.executor = ThreadPoolExecutor(max_workers=50, thread_name_prefix="RiskCalc")
+            
             t = threading.Thread(target=self._batch_writer, daemon=True)
             t.start()
             logger.info("Batch writer thread alive: %s", t.is_alive())
