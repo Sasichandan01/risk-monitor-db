@@ -97,36 +97,66 @@ class OptionsRiskAnalyzer:
                 self.instrument_metadata.clear()
 
             records = list(snapshot.values())
-            logger.info("Flushing %d records at %s", len(records), datetime.now(IST).strftime('%H:%M:%S'))
+            total_records = len(records)
+            logger.info("Flushing %d records at %s", total_records, datetime.now(IST).strftime('%H:%M:%S'))
 
-            payload = json.dumps({
-                'batch_time': datetime.now(IST).isoformat(),
-                'records': records
-            }, default=str)
+            # Split into batches if needed (SQS limit: 256KB per message, use 200KB to be safe)
+            MAX_BATCH_SIZE_KB = 200
+            batches = []
+            current_batch = []
+            current_size = 0
 
-            payload_kb = len(payload.encode('utf-8')) / 1024
-            logger.info("Payload size: %.1fKB", payload_kb)
+            for record in records:
+                record_size = len(json.dumps(record, default=str).encode('utf-8')) / 1024
+                
+                if current_size + record_size > MAX_BATCH_SIZE_KB and current_batch:
+                    batches.append(current_batch)
+                    current_batch = [record]
+                    current_size = record_size
+                else:
+                    current_batch.append(record)
+                    current_size += record_size
 
-            sqs.send_message(
-                QueueUrl=INSERT_QUEUE_URL,
-                MessageBody=payload
-            )
+            if current_batch:
+                batches.append(current_batch)
 
-            self.stats['batches_sent'] += 1
-            logger.info("Batch sent to SQS — %d records", len(records))
+            logger.info("Split into %d batches", len(batches))
 
-        except ClientError as e:
-            logger.error("SQS send failed — returning records to buffer: %s", e)
-            with self.latest_data_lock:
-                for key, record in snapshot.items():
-                    if key not in self.instrument_metadata:
-                        self.instrument_metadata[key] = record
-            self.stats['errors'] += 1
+            # Send each batch to SQS
+            for batch_num, batch in enumerate(batches, 1):
+                payload = json.dumps({
+                    'batch_time': datetime.now(IST).isoformat(),
+                    'batch_number': batch_num,
+                    'total_batches': len(batches),
+                    'records': batch
+                }, default=str)
+
+                payload_kb = len(payload.encode('utf-8')) / 1024
+                logger.info("Batch %d/%d - size: %.1fKB - records: %d", 
+                        batch_num, len(batches), payload_kb, len(batch))
+
+                try:
+                    sqs.send_message(
+                        QueueUrl=INSERT_QUEUE_URL,
+                        MessageBody=payload
+                    )
+                    self.stats['batches_sent'] += 1
+                    logger.info("Batch %d/%d sent to SQS", batch_num, len(batches))
+                except ClientError as e:
+                    logger.error("SQS send failed for batch %d/%d: %s", batch_num, len(batches), e)
+                    # Return failed batch records to buffer
+                    with self.latest_data_lock:
+                        for record in batch:
+                            key = record.get('instrument_key')
+                            if key and key not in self.instrument_metadata:
+                                self.instrument_metadata[key] = record
+                    self.stats['errors'] += 1
+
+            logger.info("Flushed %d records in %d batches", total_records, len(batches))
 
         except (ValueError, TypeError) as e:
             logger.error("Flush error: %s", e)
             self.stats['errors'] += 1
-
     def _is_valid_timestamp(self, ltt_ms):
         if ltt_ms is None:
             return False
