@@ -400,12 +400,12 @@ class OptionsRiskAnalyzer:
     def shutdown(self):
         logger.info("Shutting down analyzer...")
         self.running = False
-        self.executor.shutdown(wait=True, cancel_futures=False)
+        # self.executor.shutdown(wait=True, cancel_futures=False)  # COMMENT THIS OUT
         time.sleep(1)
-
+        
         with self.metadata_lock:
             if self.instrument_metadata:
                 logger.info("Flushing %d remaining records on shutdown...", len(self.instrument_metadata))
                 self._flush_batch()
-
+        
         logger.info("Analyzer shutdown complete")
