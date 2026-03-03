@@ -253,7 +253,7 @@ class StockDataFetcher:
                 raise ValueError("Could not determine expiry dates")
 
             all_call, all_put, all_lookup = [], [], {}
-            nifty_spot, atm_strike = self.nifty_spot, None
+            nifty_spot, atm_strike = None, None
 
             for expiry_str in expiry_dates:
                 logger.info("Fetching option chain: %s", expiry_str)
