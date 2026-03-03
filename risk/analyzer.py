@@ -66,12 +66,12 @@ class OptionsRiskAnalyzer:
     def _batch_writer(self):
         logger.info("Batch writer started — aligning to 30s market boundaries")
 
-        # while self.running:
-        #     now = datetime.now(IST)
-        #     if now.hour > 9 or (now.hour == 9 and now.minute >= 15):
-        #         break
-        #     logger.info("Waiting for market open — current time: %s", now.strftime('%H:%M:%S'))
-        #     time.sleep(10)
+        while self.running:
+            now = datetime.now(IST)
+            if now.hour > 9 or (now.hour == 9 and now.minute >= 15):
+                break
+            logger.info("Waiting for market open — current time: %s", now.strftime('%H:%M:%S'))
+            time.sleep(10)
 
         now = datetime.now(IST)
         remainder = now.second % 30
@@ -84,9 +84,9 @@ class OptionsRiskAnalyzer:
         while self.running:
             try:
                 now = datetime.now(IST)
-                # if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
-                #     logger.info("Market closed at %s — stopping batch writer", now.strftime('%H:%M:%S'))
-                #     break
+                if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
+                    logger.info("Market closed at %s — stopping batch writer", now.strftime('%H:%M:%S'))
+                    break
 
                 flush_count += 1
                 logger.info("="*60)
@@ -225,10 +225,10 @@ class OptionsRiskAnalyzer:
                     ltt = full_feed.get("ltpc", {}).get("ltt")
                     # logger.info("Got ltt: %s for %s", ltt, instrument_key)  # ADD THIS
                     
-                    # if not self._is_valid_timestamp(ltt):
-                    #     logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
-                    #     self.stats['stale_skipped'] += 1
-                    #     continue
+                    if not self._is_valid_timestamp(ltt):
+                        logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
+                        self.stats['stale_skipped'] += 1
+                        continue
 
                     metadata = self.fetcher.get_instrument_lookup(instrument_key)
                     # logger.info("Got metadata: %s for %s", bool(metadata), instrument_key)  # ADD THIS
