@@ -2,6 +2,7 @@ import json
 import base64
 import csv
 import logging
+import os
 import time
 import threading
 import requests
@@ -34,23 +35,33 @@ class StockDataFetcher:
         s3_key='instruments/nse_instruments.csv'
     ):
         """
-        Initializes a StockDataFetcher object.
+        Initializes StockDataFetcher instance.
 
         Args:
-            config (SSMConfig): An SSMConfig object with configuration settings
-            aws_profile (str, optional): The AWS profile name to use for Boto3. Defaults to 'Absc'
-            aws_region (str, optional): The AWS region to use for Boto3. Defaults to 'ap-south-1'
-            instruments_file (Path, optional): The path to the local CSV file containing instrument data. Defaults to '/mnt/tmpfs/nse_instruments.csv'
-            s3_bucket (str, optional): The S3 bucket name containing the instrument data CSV file. Defaults to 'nse-instruments-data'
-            s3_key (str, optional): The S3 key for the instrument data CSV file. Defaults to 'instruments/nse_instruments.csv'
+            config (SSMConfig): SSMConfig instance
+            aws_profile (str, optional): AWS profile name. Defaults to 'Absc'.
+            aws_region (str, optional): AWS region name. Defaults to 'ap-south-1'.
+            instruments_file (str, optional): File path for local instruments list. Defaults to '/mnt/tmpfs/nse_instruments.csv'.
+            s3_bucket (str, optional): S3 bucket name for instruments list. Defaults to 'nse-instruments-data'.
+            s3_key (str, optional): S3 key for instruments list. Defaults to 'instruments/nse_instruments.csv'.
 
         Attributes:
-            config (SSMConfig): The SSMConfig object with configuration settings
-            aws_profile (str): The AWS profile name to use for Boto3
-            aws_region (str): The AWS region to use for Boto3
-            instruments_file (Path): The path to the local CSV file containing instrument data
-            s3_bucket (str): The S3 bucket name containing the instrument data CSV file
-            s3_key (str): The S3 key for the instrument data CSV file
+            config (SSMConfig): SSMConfig instance
+            aws_profile (str): AWS profile name
+            aws_region (str): AWS region name
+            instruments_file (str): File path for local instruments list
+            s3_bucket (str): S3 bucket name for instruments list
+            s3_key (str): S3 key for instruments list
+            access_token (str): Upstox API access token
+            instrument_key (str): Key for Nifty index instrument metadata
+            subscribed_instruments (list): List of subscribed instruments
+            instrument_metadata (dict): Dictionary of instrument metadata
+            nifty_spot (float): Current Nifty index spot price
+            running (bool): Flag indicating if the fetcher is running
+            _api_client (upstox_client.UpstoxClient): Upstox API client
+            _s3 (boto3.client): Boto3 S3 client
+            _instruments_map (dict): Dictionary of instrument metadata
+            _streamer (upstox_client.UpstoxStreamClient): Upstox WebSocket stream client
         """
         self.config = config
         self.aws_profile = aws_profile
@@ -75,32 +86,48 @@ class StockDataFetcher:
         """
         Property that returns the Boto3 S3 client object.
 
-        Returns:
-            boto3.client.S3: The Boto3 S3 client object
-        Raises:
-            BotoCoreError: If there is an error initializing the S3 client
-            ClientError: If there is an error initializing the S3 client
+        The client is initialized lazily when this property is accessed for the first time.
+        If running on EC2, uses IAM role for S3 access. Otherwise, uses the specified AWS profile.
+        If the S3 client initialization fails, raises an exception.
         """
         if self._s3 is None:
             try:
-                # session = boto3.Session(profile_name=self.aws_profile)
+                is_ec2 = os.getenv('AWS_EXECUTION_ENV') or os.path.exists('/var/lib/cloud')
                 my_config = Config(region_name=self.aws_region, signature_version='s3v4')
-                self._s3 = boto3.client('s3', config=my_config)
-            except (BotoCoreError, ClientError) as e:
+                
+                if is_ec2:
+                    logger.info("Running on EC2 - using IAM role for S3")
+                    self._s3 = boto3.client('s3', config=my_config)
+                else:
+                    logger.info("Running locally - using profile %s", self.aws_profile)
+                    session = boto3.Session(profile_name=self.aws_profile)
+                    self._s3 = session.client('s3', config=my_config)
+                
+                self._s3.head_bucket(Bucket=self.s3_bucket)
+                logger.info("S3 bucket %s accessible", self.s3_bucket)
+            except ClientError as e:
+                error_code = e.response['Error']['Code']
+                if error_code == '403':
+                    logger.error("S3 Access Denied to bucket %s", self.s3_bucket)
+                elif error_code == '404':
+                    logger.error("S3 bucket %s not found", self.s3_bucket)
+                else:
+                    logger.error("S3 error: %s", e)
+                raise
+            except (BotoCoreError, Exception) as e:
                 logger.error("Failed to initialize S3 client: %s", e)
                 raise
         return self._s3
 
     def load_token(self):
         """
-        Loads the access token from the configuration.
+        Loads the access token from the configuration and checks its validity.
+
+        If the token is not found, has an invalid format or has expired, it returns False.
+        If the token is valid, it sets the access_token attribute and returns True.
 
         Returns:
-            bool: True if the token is valid and not expired, False otherwise
-        Raises:
-            json.JSONDecodeError: If there is an error parsing the token
-            KeyError: If there is an error parsing the token
-            ValueError: If there is an error parsing the token
+            bool: True if the token is valid, False otherwise
         """
         try:
             token = self.config.ACCESS_TOKEN
@@ -129,16 +156,12 @@ class StockDataFetcher:
             return False
 
     def save_token(self):
+        
         """
-        Saves the current access token to SSM.
+        Saves the access token to the configuration.
 
         Returns:
-            bool: True if token save is successful, False otherwise
-        Raises:
-            ClientError: If there is an error saving the token to SSM
-            BotoCoreError: If there is an error saving the token to SSM
-            ValueError: If there is an error saving the token to SSM
-            TypeError: If there is an error saving the token to SSM
+            bool: True if the token is saved successfully, False otherwise
         """
         try:
             if self.config.save_access_token(self.access_token):
@@ -153,14 +176,18 @@ class StockDataFetcher:
 
     def login(self):
         """
-        Logins to Upstox using the authorization code flow to obtain an access token.
+        Log in to Upstox and retrieve an access token.
+
+        POST request to Upstox API with authorization code, client ID, client secret, and redirect URI.
+        If successful, save the access token to SSM and load the NSE FO map.
 
         Returns:
-            bool: True if login is successful, False otherwise
+            bool: True if login is successful, False otherwise.
+
         Raises:
-            requests.exceptions.RequestException: If there is an error with the network/HTTP request
-            KeyError: If there is an error parsing the JSON response from Upstox
-            json.JSONDecodeError: If there is an error parsing the JSON response from Upstox
+            requests.exceptions.RequestException: If there is a network/HTTP error.
+            KeyError: If there is a key error in the response data.
+            json.JSONDecodeError: If there is a parsing error in the response data.
         """
         headers = {
             'accept': 'application/json',
@@ -195,67 +222,88 @@ class StockDataFetcher:
 
     def download_instruments_from_s3(self):
         """
-        Downloads the instruments CSV file from the S3 bucket specified in the configuration.
+        Downloads the instruments file from S3.
+
+        Parameters:
+            None
 
         Returns:
-            bool: True if the download is successful, False otherwise
+            bool: True if download is successful, False otherwise
+
         Raises:
-            ClientError: If there is an error with the S3 download
+            ClientError: If S3 access is denied or the object is not found
         """
         local_path = Path(self.instruments_file)
         try:
-            logger.info("Downloading instruments from S3 bucket: %s", self.s3_bucket)
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            logger.info("Downloading from s3://%s/%s to %s", self.s3_bucket, self.s3_key, local_path)
+            
             self.s3.download_file(self.s3_bucket, self.s3_key, str(local_path))
-            logger.info("Downloaded to %s", local_path)
-            return True
+            
+            if local_path.exists():
+                size_kb = local_path.stat().st_size / 1024
+                logger.info("Downloaded successfully - size: %.1f KB", size_kb)
+                return True
+            else:
+                logger.error("Download completed but file not found at %s", local_path)
+                return False
         except ClientError as e:
-            logger.error("S3 download failed: %s", e)
+            error_code = e.response['Error']['Code']
+            if error_code == '403':
+                logger.error("S3 Access Denied - bucket: %s, key: %s", self.s3_bucket, self.s3_key)
+            elif error_code == '404':
+                logger.error("S3 Object not found - bucket: %s, key: %s", self.s3_bucket, self.s3_key)
+            else:
+                logger.error("S3 download failed: %s", e)
             return False
 
     def ensure_instruments_csv(self):
+        
         """
-        Ensures that the instruments CSV file is available locally.
+        Ensures that the NSE FO instruments CSV file is present in the local file system.
 
-        If the file exists and is less than 24 hours old, it is considered valid and used.
-        Otherwise, it is downloaded from the S3 bucket specified in the configuration.
+        If the file does not exist, it downloads a fresh copy from S3. If the download fails,
+        it raises a FileNotFoundError.
+
+        The method does not return any value.
 
         Raises:
-            FileNotFoundError: If the file cannot be found or downloaded from the S3 bucket
-            OSError: If there is an error with the file system
-            IOError: If there is an error with the file system
+            FileNotFoundError: If the file does not exist or the download from S3 fails.
         """
-        csv_path = Path(self.instruments_file)
         try:
-            if csv_path.exists():
-                file_age_hours = (time.time() - csv_path.stat().st_mtime) / 3600
-                if file_age_hours < 24:
-                    logger.info("Using cached instruments (age: %.1fh)", file_age_hours)
-                    return
+            logger.info("Downloading fresh instruments from S3")
             if not self.download_instruments_from_s3():
-                raise FileNotFoundError("Failed to download instruments from S3 bucket %s" % self.s3_bucket)
+                raise FileNotFoundError("Failed to download from s3://%s/%s" % (self.s3_bucket, self.s3_key))
         except (OSError, IOError) as e:
-            logger.error("File system error while ensuring instruments: %s", e)
+            logger.error("File system error: %s", e)
             raise
 
     def load_nse_fo_map(self):
         """
-        Loads the NSE FO instrument mapping from the CSV file specified in the configuration.
+        Loads the NSE FO instrument mapping from the CSV file into memory.
 
-        The mapping is a dictionary of tuples (tradingsymbol, option_type, exchange) to dictionaries containing the instrument key, exchange token, symbol, option type, and exchange.
+        If the map is already loaded, it returns the cached map.
+
+        If the file does not exist, it raises a FileNotFoundError.
+
+        If there is an error while parsing the CSV, it raises a csv.Error.
+
+        If there is a KeyError or ValueError while creating the mapping, it raises that error.
 
         Returns:
-            dict: The NSE FO instrument mapping if successful, None otherwise
-        Raises:
-            OSError: If there is an error with the file system
-            csv.Error: If there is an error with the CSV file
-            KeyError: If there is an error with the CSV file columns
-            ValueError: If there is an error with the CSV file data
+            dict: The mapping of (tradingsymbol, option_type, exchange) to instrument metadata.
         """
         if self._instruments_map is not None:
+            logger.info("Using cached instruments map - %d entries", len(self._instruments_map))
             return self._instruments_map
         try:
+            logger.info("Loading NSE FO instrument mapping")
             self.ensure_instruments_csv()
             path = Path(self.instruments_file)
+            
+            if not path.exists():
+                raise FileNotFoundError("Instruments file not found at %s" % path)
+            
             mapping = {}
             with path.open(newline='', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
@@ -280,20 +328,7 @@ class StockDataFetcher:
             raise
 
     def get_all_expiry_dates_api(self, instrument_key, count=4):
-        """
-        Fetches all expiry dates for a given instrument key using the Upstox API.
-
-        Args:
-            instrument_key (str): The instrument key to fetch expiry dates for
-            count (int, optional): The number of expiry dates to fetch. Defaults to 4.
-
-        Returns:
-            list: A list of expiry dates in ascending order. Empty list if API call fails.
-        Raises:
-            requests.exceptions.RequestException: If there is an error with the network/HTTP request
-            json.JSONDecodeError: If there is an error parsing the JSON response from Upstox
-            KeyError: If there is an error parsing the JSON response from Upstox
-        """
+        
         url = "https://api.upstox.com/v2/option/contract?instrument_key=%s" % instrument_key
         headers = {
             "Authorization": f"Bearer {self.access_token}",
@@ -314,20 +349,22 @@ class StockDataFetcher:
         except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError) as e:
             logger.error("Get expiry dates error: %s", e)
             return []
-
+        
     def get_filtered_option_instruments(self, atm_range=15):
+
         """
-        Fetches all call and put options for the Nifty 50 index, filtered by a given ATM range.
+        Retrieves the filtered list of call and put option instruments for the Nifty 50 index.
+
+        The function fetches the latest available Nifty 50 index spot price, and the ATM (at-the-money) strike price.
+        It then fetches the option chain for the next four expiries, filters out strikes that are outside the given ATM range,
+        and returns the filtered list of call and put option instruments.
 
         Args:
-            atm_range (int, optional): The ATM range to filter options by. Defaults to 15.
+            atm_range (int, optional): The range of strikes to consider around the ATM strike (default=15).
 
         Returns:
-            tuple: A tuple containing three elements - a list of call option instrument keys, a list of put option instrument keys, and a dictionary containing metadata for each instrument key.
-        Raises:
-            ValueError: If there is an error determining the expiry dates or processing the filtered instruments
-            TypeError: If there is an error processing the filtered instruments
-            upstox_client.rest.ApiException: If there is an error with the Upstox API call
+            tuple: A tuple containing the filtered list of call option instruments, the filtered list of put option instruments,
+            and a dictionary containing the Nifty 50 index spot price, the ATM strike price, and the instrument metadata.
         """
         try:
             if self._api_client is None:
@@ -398,10 +435,7 @@ class StockDataFetcher:
             return [], [], {}
 
     def _start_subscription_refresher(self, atm_range=15):
-        """
-        Background thread — refreshes WebSocket subscription every 30 minutes
-        with updated ATM strikes.
-        """
+        
         def refresher():
             while self.running:
                 time.sleep(1800)
@@ -434,15 +468,22 @@ class StockDataFetcher:
 
     def start_polling(self, on_message_callback, atm_range=15):
         """
-        Entry point called by analyzer.
-        Starts WebSocket stream with 30-minute subscription refresh.
+        Starts the WebSocket stream for real-time data.
+
+        Parameters:
+            on_message_callback (callable): Callback function to process WebSocket messages.
+            atm_range (int): The ATM range for filtering option instruments.
+
+        Raises:
+            ValueError: If no access token is available.
+            RuntimeError: If an error occurs while starting the WebSocket stream.
+            upstox_client.rest.ApiException: If an error occurs while subscribing to instruments.
         """
         try:
             if not self.access_token:
                 logger.error("No access token available")
                 return
 
-            # Initial instrument load
             call_instr, put_instr, meta = self.get_filtered_option_instruments(atm_range=atm_range)
             if not call_instr and not put_instr:
                 logger.error("No option instruments found")
@@ -488,7 +529,6 @@ class StockDataFetcher:
             self._streamer.on("error", on_error)
             self._streamer.on("close", on_close)
 
-            # Start subscription refresher thread
             self._start_subscription_refresher(atm_range=atm_range)
 
             try:
@@ -498,7 +538,7 @@ class StockDataFetcher:
                 self._streamer.disconnect()
             except AttributeError as e:
                 if 'pool' in str(e):
-                    pass  # Upstox SDK cleanup bug
+                    pass
                 else:
                     raise
             except Exception as e:
@@ -514,12 +554,12 @@ class StockDataFetcher:
 
     def get_instrument_metadata(self, instrument_key):
         """
-        Returns the metadata for a given instrument key.
+        Retrieves the metadata for a given instrument key.
 
         Args:
-            instrument_key (str): The instrument key to retrieve metadata for
+            instrument_key (str): The key of the instrument in the metadata dictionary.
 
         Returns:
-            dict: The metadata for the given instrument key if found, empty dictionary otherwise
+            dict: The metadata for the given instrument key if present, otherwise an empty dictionary.
         """
         return self.instrument_metadata.get(instrument_key, {})
