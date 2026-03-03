@@ -186,6 +186,7 @@ class OptionsRiskAnalyzer:
 
     def on_message_handler(self, data):
         try:
+            feed_count=0
             feeds = data.get("feeds", {})
             if not feeds:
                 return
