@@ -259,8 +259,12 @@ class StockDataFetcher:
         Raises:
             FileNotFoundError: If the file does not exist or the download from S3 fails.
         """
+        csv_path = Path(self.instruments_file)
         try:
-            logger.info("Downloading fresh instruments from S3")
+            if csv_path.exists():
+                logger.info("Using existing instruments file at %s", csv_path)
+                return
+            logger.info("Instruments file not found - downloading from S3")
             if not self.download_instruments_from_s3():
                 raise FileNotFoundError("Failed to download from s3://%s/%s" % (self.s3_bucket, self.s3_key))
         except (OSError, IOError) as e:

@@ -420,7 +420,8 @@ class OptionsRiskAnalyzer:
 
                     metadata = self.fetcher.get_instrument_metadata(instrument_key)
                     if not metadata:
-                        logger.warning("No metadata for instrument: %s", instrument_key)  # ADD THIS
+                        if len(self.fetcher.instrument_metadata) == 0:
+                            logger.warning("Metadata not yet populated - waiting")
                         continue
 
                     full_feed['instrument_key'] = instrument_key
