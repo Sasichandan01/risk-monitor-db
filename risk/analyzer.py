@@ -190,7 +190,7 @@ class OptionsRiskAnalyzer:
             feeds = data.get("feeds", {})
             if not feeds:
                 return
-
+            logger.info("Received WebSocket message with %d feeds", len(feeds))
             for instrument_key, feed_info in feeds.items():
                 try:
                     if 'NSE_INDEX|Nifty 50' in instrument_key or 'Nifty 50' in instrument_key:
@@ -228,6 +228,8 @@ class OptionsRiskAnalyzer:
 
     def _process_feed(self, instrument_key, full_feed, metadata, ltt):
         try:
+            logger.info("Processing feed for %s", metadata.get('symbol', instrument_key))  # ADD THIS
+        
             flat = self.extract_flat(full_feed, metadata, ltt)
             if not flat:
                 return
@@ -246,6 +248,7 @@ class OptionsRiskAnalyzer:
 
             with self.metadata_lock:
                 self.instrument_metadata[instrument_key] = flat
+                logger.info("Stored in metadata: %s | Total metadata: %d", flat.get('symbol'), len(self.instrument_metadata))  # ADD THIS
 
             self.stats['processed'] += 1
 
@@ -288,6 +291,7 @@ class OptionsRiskAnalyzer:
 
             expiry_date = metadata.get('expiry')
             if not expiry_date:
+                logger.warning("No expiry for %s - skipping", metadata.get('symbol'))  # ADD THIS
                 self.stats['invalid_data'] += 1
                 return None
 
@@ -354,6 +358,7 @@ class OptionsRiskAnalyzer:
 
         except (KeyError, ValueError, TypeError, IndexError) as e:
             logger.error("Extract error for %s: %s", metadata.get('symbol', 'unknown'), e)
+            logger.error("Raw feed data keys: %s", list(feed_data.keys())) 
             self.stats['invalid_data'] += 1
             self.stats['errors'] += 1
             return None
