@@ -68,20 +68,20 @@ class OptionsRiskAnalyzer:
 
         logger.info("Batch writer aligned — starting at %s", datetime.now(IST).strftime('%H:%M:%S'))
 
-        while self.running:
-            try:
-                now = datetime.now(IST)
-                if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
-                    logger.info("Market closed at %s — stopping batch writer", now.strftime('%H:%M:%S'))
-                    break
+        # while self.running:
+        #     try:
+        #         now = datetime.now(IST)
+        #         if now.hour > 15 or (now.hour == 15 and now.minute >= 30):
+        #             logger.info("Market closed at %s — stopping batch writer", now.strftime('%H:%M:%S'))
+        #             break
 
-                self._flush_batch()
-                time.sleep(30)
+        #         self._flush_batch()
+        #         time.sleep(30)
 
-            except Exception as e:
-                logger.error("Batch writer error — continuing: %s", e)
-                self.stats['errors'] += 1
-                time.sleep(30)
+        #     except Exception as e:
+        #         logger.error("Batch writer error — continuing: %s", e)
+        #         self.stats['errors'] += 1
+        #         time.sleep(30)
 
     def _flush_batch(self):
         snapshot = {}
