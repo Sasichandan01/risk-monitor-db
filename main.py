@@ -26,7 +26,6 @@ def main():
         sys.exit(1)
 
     logger.info("✓ Ready")
-    fetcher.load_nse_fo_map()
     analyzer = OptionsRiskAnalyzer(fetcher, config)
 
     def shutdown():

@@ -43,7 +43,6 @@ class StockDataFetcher:
         self.running = True
         self._api_client = None
         self._s3 = None
-        self._instruments_map = None
         self._streamer = None
 
     @property
@@ -131,7 +130,7 @@ class StockDataFetcher:
             self.access_token = resp.json()['access_token']
             logger.info("Login success")
             self.save_token()
-            self.load_nse_fo_map()
+            self.ensure_instruments_csv()
             return True
         except requests.exceptions.RequestException as e:
             logger.error("Login network/HTTP error: %s", e)
@@ -178,40 +177,31 @@ class StockDataFetcher:
             logger.error("File system error: %s", e)
             raise
 
-    def load_nse_fo_map(self):
-        if self._instruments_map is not None:
-            logger.info("Using cached instruments map - %d entries", len(self._instruments_map))
-            return self._instruments_map
+    def lookup_in_csv(self, symbol, option_type='CE'):
+        """Read CSV file and find matching instrument"""
         try:
-            logger.info("Loading NSE FO instrument mapping")
-            self.ensure_instruments_csv()
             path = Path(self.instruments_file)
-            
             if not path.exists():
-                raise FileNotFoundError("Instruments file not found at %s" % path)
+                logger.error("Instruments file not found at %s", path)
+                return None
             
-            mapping = {}
             with path.open(newline='', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    key = (
-                        row["tradingsymbol"].strip(),
-                        row["option_type"].strip(),
-                        row["exchange"].strip()
-                    )
-                    mapping[key] = {
-                        "instrument_key": row["instrument_key"].strip(),
-                        "exchange_token": int(row["exchange_token"].strip()),
-                        "symbol": row["tradingsymbol"].strip(),
-                        "option_type": row["option_type"].strip(),
-                        "exchange": row["exchange"].strip(),
-                    }
-            self._instruments_map = mapping
-            logger.info("Loaded %d instruments into memory", len(mapping))
-            return mapping
+                    if (row["tradingsymbol"].strip() == symbol and 
+                        row["option_type"].strip() == option_type and 
+                        row["exchange"].strip() == "NSE_FO"):
+                        return {
+                            "instrument_key": row["instrument_key"].strip(),
+                            "exchange_token": int(row["exchange_token"].strip()),
+                            "symbol": row["tradingsymbol"].strip(),
+                            "option_type": row["option_type"].strip(),
+                            "exchange": row["exchange"].strip(),
+                        }
+            return None
         except (OSError, csv.Error, KeyError, ValueError) as e:
-            logger.error("Load instruments error: %s", e)
-            raise
+            logger.error("CSV lookup error for %s %s: %s", symbol, option_type, e)
+            return None
 
     def get_all_expiry_dates_api(self, instrument_key, count=4):
         url = "https://api.upstox.com/v2/option/contract?instrument_key=%s" % instrument_key
@@ -267,6 +257,7 @@ class StockDataFetcher:
                 if atm_strike is None:
                     nifty_spot = float(data[0].get('underlying_spot_price', 24000))
                     atm_strike = round(nifty_spot / 50) * 50
+                    self.nifty_spot = nifty_spot
                     logger.info("Nifty Spot: %.2f ATM: %d", nifty_spot, atm_strike)
 
                 min_strike = atm_strike - (atm_range * 50)
@@ -345,6 +336,7 @@ class StockDataFetcher:
                 logger.error("No access token available")
                 return
 
+            logger.info("Getting Nifty spot and filtering instruments...")
             call_instr, put_instr, meta = self.get_filtered_option_instruments(atm_range=atm_range)
             if not call_instr and not put_instr:
                 logger.error("No option instruments found")
