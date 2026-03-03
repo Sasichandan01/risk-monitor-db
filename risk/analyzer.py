@@ -2,8 +2,10 @@ import threading
 import time
 import logging
 import json
+import queue
 from datetime import datetime, timezone, timedelta
 from botocore.exceptions import ClientError
+from concurrent.futures import ThreadPoolExecutor
 
 import boto3
 
@@ -29,6 +31,7 @@ class OptionsRiskAnalyzer:
         self.latest_data_lock = threading.Lock()
         self.running = True
         self.last_spot_ssm_write = 0
+        self.executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="RiskCalc")
         self.stats = {
             'total_received': 0,
             'invalid_data': 0,
@@ -174,21 +177,33 @@ class OptionsRiskAnalyzer:
 
                     full_feed['instrument_key'] = instrument_key
 
-                    flat = self.extract_flat(full_feed, metadata, ltt)
-                    if not flat:
-                        continue
-
-                    with self.latest_data_lock:
-                        self.instrument_metadata[instrument_key] = flat
-
-                    self.stats['processed'] += 1
+                    # Submit to thread pool for parallel processing
+                    self.executor.submit(self._process_feed, instrument_key, full_feed, metadata, ltt)
 
                 except (KeyError, ValueError, TypeError) as e:
-                    logger.error("Feed processing error for %s: %s", instrument_key, e)
+                    logger.error("Feed queueing error for %s: %s", instrument_key, e)
                     self.stats['errors'] += 1
 
         except (KeyError, ValueError, TypeError) as e:
             logger.error("Message handler error: %s", e)
+            self.stats['errors'] += 1
+
+    def _process_feed(self, instrument_key, full_feed, metadata, ltt):
+        """Process feed in parallel thread - does heavy calculations"""
+        try:
+            flat = self.extract_flat(full_feed, metadata, ltt)
+            if not flat:
+                return
+
+            with self.latest_data_lock:
+                self.instrument_metadata[instrument_key] = flat
+
+            self.stats['processed'] += 1
+            logger.info("Processed %s | LTP: %s | Risk: %s | Rec: %s", 
+                       flat['symbol'], flat['ltp'], flat['overall_risk_score'], flat['recommendation'])
+
+        except (KeyError, ValueError, TypeError) as e:
+            logger.error("Feed processing error for %s: %s", instrument_key, e)
             self.stats['errors'] += 1
 
     def _update_nifty_spot(self, feed_info):
@@ -254,11 +269,14 @@ class OptionsRiskAnalyzer:
                 'rho': greeks.get('rho')
             }
 
+            logger.info("Cleaning data for %s", trading_symbol)
             cleaned = DataCleaner.clean_option_data(raw_data, self.risk_calculator.nifty_spot)
             if not cleaned:
                 self.stats['invalid_data'] += 1
                 return None
 
+            logger.info("Calculating risk for %s | Strike: %s | LTP: %s", 
+                       trading_symbol, cleaned['strike'], cleaned.get('ltp', 0))
             risk = self.risk_calculator.calculate_risk_metrics(cleaned)
 
             flat = {
@@ -314,6 +332,7 @@ class OptionsRiskAnalyzer:
     def shutdown(self):
         logger.info("Shutting down analyzer...")
         self.running = False
+        self.executor.shutdown(wait=True, cancel_futures=False)
         time.sleep(1)
 
         with self.latest_data_lock:
