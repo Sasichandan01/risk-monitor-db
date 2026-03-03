@@ -28,7 +28,6 @@ class StockDataFetcher:
     def __init__(
         self,
         config,
-        aws_profile='Absc',
         aws_region='ap-south-1',
         instruments_file='/mnt/tmpfs/nse_instruments.csv',
         s3_bucket='nse-instruments-data',
@@ -39,7 +38,6 @@ class StockDataFetcher:
 
         Args:
             config (SSMConfig): SSMConfig instance
-            aws_profile (str, optional): AWS profile name. Defaults to 'Absc'.
             aws_region (str, optional): AWS region name. Defaults to 'ap-south-1'.
             instruments_file (str, optional): File path for local instruments list. Defaults to '/mnt/tmpfs/nse_instruments.csv'.
             s3_bucket (str, optional): S3 bucket name for instruments list. Defaults to 'nse-instruments-data'.
@@ -47,7 +45,6 @@ class StockDataFetcher:
 
         Attributes:
             config (SSMConfig): SSMConfig instance
-            aws_profile (str): AWS profile name
             aws_region (str): AWS region name
             instruments_file (str): File path for local instruments list
             s3_bucket (str): S3 bucket name for instruments list
@@ -64,7 +61,6 @@ class StockDataFetcher:
             _streamer (upstox_client.UpstoxStreamClient): Upstox WebSocket stream client
         """
         self.config = config
-        self.aws_profile = aws_profile
         self.aws_region = aws_region
         self.instruments_file = instruments_file
         self.s3_bucket = s3_bucket
@@ -92,16 +88,9 @@ class StockDataFetcher:
         """
         if self._s3 is None:
             try:
-                is_ec2 = os.getenv('AWS_EXECUTION_ENV') or os.path.exists('/var/lib/cloud')
+
                 my_config = Config(region_name=self.aws_region, signature_version='s3v4')
-                
-                if is_ec2:
-                    logger.info("Running on EC2 - using IAM role for S3")
-                    self._s3 = boto3.client('s3', config=my_config)
-                else:
-                    logger.info("Running locally - using profile %s", self.aws_profile)
-                    session = boto3.Session(profile_name=self.aws_profile)
-                    self._s3 = session.client('s3', config=my_config)
+                self._s3 = boto3.client('s3', config=my_config)
                 
                 self._s3.head_bucket(Bucket=self.s3_bucket)
                 logger.info("S3 bucket %s accessible", self.s3_bucket)
