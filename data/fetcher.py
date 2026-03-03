@@ -38,7 +38,7 @@ class StockDataFetcher:
         self.access_token = None
         self.instrument_key = 'NSE_INDEX|Nifty 50'
         self.subscribed_instruments = []
-        self.instrument_metadata = {}
+        self.instrument_lookup = {}
         self.nifty_spot = 24000
         self.running = True
         self._api_client = None
@@ -252,7 +252,7 @@ class StockDataFetcher:
             if not expiry_dates:
                 raise ValueError("Could not determine expiry dates")
 
-            all_call, all_put, all_metadata = [], [], {}
+            all_call, all_put, all_lookup = [], [], {}
             nifty_spot, atm_strike = self.nifty_spot, None
 
             for expiry_str in expiry_dates:
@@ -289,29 +289,20 @@ class StockDataFetcher:
                                 else:
                                     all_put.append(instr_key)
 
-                                all_metadata[instr_key] = {
+                                all_lookup[instr_key] = {
                                     'symbol': symbol,
                                     'strike': strike,
                                     'expiry': expiry_str,
-                                    'option_type': side_label,
-                                    'underlying_spot': nifty_spot
+                                    'option_type': side_label
                                 }
-                                
-                                csv_key = (symbol, side_label, 'NSE_FO')
-                                if csv_key in self._instruments_map:
-                                    csv_data = self._instruments_map[csv_key]
-                                    all_metadata[instr_key].update({
-                                        'exchange_token': csv_data.get('exchange_token'),
-                                        'exchange': csv_data.get('exchange')
-                                    })
 
             logger.info("Total filtered instruments: %d", len(all_call) + len(all_put))
-            logger.info("Metadata populated with %d entries", len(all_metadata))
+            logger.info("Instrument lookup populated with %d entries", len(all_lookup))
             
             return all_call, all_put, {
                 'nifty_spot': nifty_spot,
                 'atm_strike': atm_strike,
-                'instrument_metadata': all_metadata
+                'instrument_lookup': all_lookup
             }
         except (ValueError, TypeError, upstox_client.rest.ApiException) as e:
             logger.error("Filtered instruments processing error: %s", e)
@@ -332,7 +323,7 @@ class StockDataFetcher:
                         logger.warning("Subscription refresh — no instruments found")
                         continue
 
-                    self.instrument_metadata = meta.get('instrument_metadata', {})
+                    self.instrument_lookup = meta.get('instrument_lookup', {})
                     self.nifty_spot = meta.get('nifty_spot', 24000)
 
                     instruments = [self.instrument_key] + call_instr + put_instr
@@ -359,7 +350,7 @@ class StockDataFetcher:
                 logger.error("No option instruments found")
                 return
 
-            self.instrument_metadata = meta.get('instrument_metadata', {})
+            self.instrument_lookup = meta.get('instrument_lookup', {})
             self.nifty_spot = meta.get('nifty_spot', 24000)
 
             instruments = [self.instrument_key] + call_instr + put_instr
@@ -422,5 +413,5 @@ class StockDataFetcher:
             logger.error("Start polling error: %s", e)
             raise
 
-    def get_instrument_metadata(self, instrument_key):
-        return self.instrument_metadata.get(instrument_key, {})
+    def get_instrument_lookup(self, instrument_key):
+        return self.instrument_lookup.get(instrument_key, {})

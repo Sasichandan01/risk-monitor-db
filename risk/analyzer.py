@@ -56,6 +56,7 @@ class OptionsRiskAnalyzer:
         self.running = True
         self.last_spot_ssm_write = 0
         self.last_data_received = time.time()
+        self.instrument_metadata = {}
         self.health_check_interval = 60  # Check every 60s
         self.data_timeout = 120  # No data for 120s = unhealthy
         self.stats = {
@@ -405,7 +406,7 @@ class OptionsRiskAnalyzer:
                         self.stats['stale_skipped'] += 1
                         continue
 
-                    metadata = self.fetcher.get_instrument_metadata(instrument_key)
+                    metadata = self.fetcher.get_instrument_lookup(instrument_key)
                     if not metadata:
                         continue
 
@@ -416,7 +417,7 @@ class OptionsRiskAnalyzer:
                         continue
 
                     with self.latest_data_lock:
-                        self.latest_data[instrument_key] = flat
+                        self.instrument_metadata[instrument_key] = flat
 
                     self.stats['processed'] += 1
 
