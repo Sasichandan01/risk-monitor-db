@@ -225,10 +225,10 @@ class OptionsRiskAnalyzer:
                     ltt = full_feed.get("ltpc", {}).get("ltt")
                     # logger.info("Got ltt: %s for %s", ltt, instrument_key)  # ADD THIS
                     
-                    if not self._is_valid_timestamp(ltt):
-                        logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
-                        self.stats['stale_skipped'] += 1
-                        continue
+                    # if not self._is_valid_timestamp(ltt):
+                    #     logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
+                    #     self.stats['stale_skipped'] += 1
+                    #     continue
 
                     metadata = self.fetcher.get_instrument_lookup(instrument_key)
                     # logger.info("Got metadata: %s for %s", bool(metadata), instrument_key)  # ADD THIS
