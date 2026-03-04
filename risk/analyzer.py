@@ -185,7 +185,7 @@ class OptionsRiskAnalyzer:
                 # logger.warning("Timestamp too old: %s < %s", ltt_ts, MIN_VALID_TS)  # ADD THIS
                 return False
             
-            if now_ts - ltt_ts > 60:
+            if now_ts - ltt_ts > 100:
                 # logger.warning("Timestamp stale: %s - %s = %s seconds", now_ts, ltt_ts, now_ts - ltt_ts)  # ADD THIS
                 return False
             return True
