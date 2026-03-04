@@ -231,10 +231,12 @@ class OptionsRiskAnalyzer:
                         continue
 
                     metadata = self.fetcher.get_instrument_lookup(instrument_key)
-                    # logger.info("Got metadata: %s for %s", bool(metadata), instrument_key)  # ADD THIS
-                    
                     if not metadata:
-                        logger.warning("No metadata for %s", instrument_key)  # ADD THIS
+                        # ADD THIS CHECK
+                        if instrument_key in self.fetcher.subscribed_instruments:
+                            logger.error("BUG: %s is subscribed but NOT in lookup!", instrument_key)
+                        else:
+                            logger.warning("Unsolicited feed: %s not in our subscription", instrument_key)
                         self.stats['not_subscribed'] += 1
                         continue
 
