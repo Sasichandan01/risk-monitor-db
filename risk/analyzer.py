@@ -179,7 +179,7 @@ class OptionsRiskAnalyzer:
             ltt_ts = int(ltt_ms) / 1000
             now_ts = datetime.now(IST).timestamp()
             
-            logger.info("Timestamp check: ltt=%s, now=%s, diff=%s", ltt_ts, now_ts, now_ts - ltt_ts)  # ADD THIS
+            # logger.info("Timestamp check: ltt=%s, now=%s, diff=%s", ltt_ts, now_ts, now_ts - ltt_ts)  # ADD THIS
             
             if ltt_ts < MIN_VALID_TS:
                 logger.warning("Timestamp too old: %s < %s", ltt_ts, MIN_VALID_TS)  # ADD THIS
@@ -201,7 +201,7 @@ class OptionsRiskAnalyzer:
         return feed_time.replace(second=next_sec, microsecond=0)
 
     def on_message_handler(self, data):
-        logger.info("WebSocket message received") 
+        #logger.info("WebSocket message received") 
         # print(data)
         try:
             feed_count=0
@@ -213,7 +213,7 @@ class OptionsRiskAnalyzer:
 
                 try:
                     if 'NSE_INDEX|Nifty 50' in instrument_key or 'Nifty 50' in instrument_key:
-                        logger.info("Nifty index - updating spot")  # ADD THIS
+                        #logger.info("Nifty index - updating spot")  # ADD THIS
                         self._update_nifty_spot(feed_info)
                         continue
 
@@ -265,16 +265,16 @@ class OptionsRiskAnalyzer:
             symbol = flat.get('symbol', '')
             ltp = flat.get('ltp', 0)
 
-            if risk_score > 75:
-                logger.warning("HIGH RISK: %s | Score: %.2f | Rec: %s | LTP: %.2f", 
-                            symbol, risk_score, recommendation, ltp)
-            elif risk_score > 50:
-                logger.info("MEDIUM RISK: %s | Score: %.2f | Rec: %s | LTP: %.2f", 
-                        symbol, risk_score, recommendation, ltp)
+        #   b  if risk_score > 75:
+        #         logger.warning("HIGH RISK: %s | Score: %.2f | Rec: %s | LTP: %.2f", 
+        #                     symbol, risk_score, recommendation, ltp)
+        #     elif risk_score > 50:
+        #         logger.info("MEDIUM RISK: %s | Score: %.2f | Rec: %s | LTP: %.2f", 
+        #                 symol, risk_score, recommendation, ltp)
 
             with self.metadata_lock:
                 self.instrument_metadata[instrument_key] = flat
-                logger.info("Stored in metadata: %s | Total metadata: %d", flat.get('symbol'), len(self.instrument_metadata))  # ADD THIS
+                # logger.info("Stored in metadata: %s | Total metadata: %d", flat.get('symbol'), len(self.instrument_metadata))  # ADD THIS
 
             self.stats['processed'] += 1
 
@@ -384,7 +384,6 @@ class OptionsRiskAnalyzer:
 
         except (KeyError, ValueError, TypeError, IndexError) as e:
             logger.error("Extract error for %s: %s", metadata.get('symbol', 'unknown'), e)
-            logger.error("Raw feed data keys: %s", list(feed_data.keys())) 
             self.stats['invalid_data'] += 1
             self.stats['errors'] += 1
             return None

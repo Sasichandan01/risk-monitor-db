@@ -53,7 +53,6 @@ class StockDataFetcher:
                 self._s3 = boto3.client('s3', config=my_config)
                 
                 self._s3.head_bucket(Bucket=self.s3_bucket)
-                logger.info("S3 bucket %s accessible", self.s3_bucket)
             except ClientError as e:
                 error_code = e.response['Error']['Code']
                 if error_code == '403':
@@ -86,7 +85,6 @@ class StockDataFetcher:
 
             if datetime.now() < exp_time:
                 self.access_token = token
-                logger.info("Loaded token from config (expires %s)", exp_time)
                 return True
             else:
                 logger.warning("Token has expired")
@@ -98,7 +96,6 @@ class StockDataFetcher:
     def save_token(self):
         try:
             if self.config.save_access_token(self.access_token):
-                logger.info("Token successfully saved to SSM")
                 return True
             else:
                 logger.error("Failed to save token to SSM")
@@ -168,7 +165,6 @@ class StockDataFetcher:
         csv_path = Path(self.instruments_file)
         try:
             if csv_path.exists():
-                logger.info("Using existing instruments file at %s", csv_path)
                 return
             logger.info("Instruments file not found - downloading from S3")
             if not self.download_instruments_from_s3():
@@ -220,7 +216,6 @@ class StockDataFetcher:
             nifty_spot, atm_strike = None, None
 
             for expiry_str in expiry_dates:
-                logger.info("Fetching option chain: %s", expiry_str)
                 resp = options_api.get_put_call_option_chain(index_key, expiry_str)
                 data_obj = resp.to_dict() if hasattr(resp, 'to_dict') else resp
                 data = data_obj.get('data', [])
@@ -232,7 +227,6 @@ class StockDataFetcher:
                     nifty_spot = float(data[0].get('underlying_spot_price', 24000))
                     atm_strike = round(nifty_spot / 50) * 50
                     self.nifty_spot = nifty_spot
-                    logger.info("Nifty Spot: %.2f ATM: %d", nifty_spot, atm_strike)
 
                 min_strike = atm_strike - (atm_range * 50)
                 max_strike = atm_strike + (atm_range * 50)
@@ -261,8 +255,6 @@ class StockDataFetcher:
                                     'option_type': side_label
                                 }
 
-            logger.info("Total filtered instruments: %d", len(all_call) + len(all_put))
-            logger.info("Instrument lookup populated with %d entries", len(all_lookup))
             
             return all_call, all_put, {
                 'nifty_spot': nifty_spot,
@@ -310,7 +302,6 @@ class StockDataFetcher:
                 logger.error("No access token available")
                 return
 
-            logger.info("Getting Nifty spot and filtering instruments...")
             call_instr, put_instr, meta = self.get_filtered_option_instruments(atm_range=atm_range)
             if not call_instr and not put_instr:
                 logger.error("No option instruments found")
