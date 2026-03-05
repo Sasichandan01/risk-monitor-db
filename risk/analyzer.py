@@ -1,4 +1,5 @@
 import threading
+import os
 import time
 import logging
 import json
@@ -52,16 +53,36 @@ class OptionsRiskAnalyzer:
         try:
             logger.info("Starting Options Risk Analyzer...")
             
-            # Create executor HERE, not in __init__
             self.executor = ThreadPoolExecutor(max_workers=50, thread_name_prefix="RiskCalc")
             
-            t = threading.Thread(target=self._batch_writer, daemon=True)
-            t.start()
-            logger.info("Batch writer thread alive: %s", t.is_alive())
+            t1 = threading.Thread(target=self._batch_writer, daemon=True)
+            t1.start()
+            logger.info("Batch writer thread alive: %s", t1.is_alive())
+            
+            t2 = threading.Thread(target=self._health_checker, daemon=True)  # ADD THIS
+            t2.start()
+            logger.info("Health checker thread alive: %s", t2.is_alive())
+            
             self.fetcher.start_polling(self.on_message_handler)
         except (RuntimeError, ValueError, TypeError) as e:
             logger.error("Analyzer start failed: %s", e)
             raise
+
+    def _health_checker(self):
+        logger.info("Health checker started")
+        
+        while self.running:
+            time.sleep(60)  # Check every 60 seconds
+            
+            time_since_last_data = time.time() - self.last_data_received
+            
+            if time_since_last_data > 60:
+                logger.error("=" * 70)
+                logger.error("NO DATA RECEIVED FOR %.0f SECONDS - RESTARTING APP", time_since_last_data)
+                logger.error("=" * 70)
+                
+                # Force exit - systemd/supervisor will restart
+                os._exit(1)
 
     def _batch_writer(self):
         logger.info("Batch writer started — aligning to 30s market boundaries")
@@ -257,15 +278,15 @@ class OptionsRiskAnalyzer:
 
     def _process_feed(self, instrument_key, full_feed, metadata, ltt):
         try:
-        
+            self.last_data_received = time.time() 
             flat = self.extract_flat(full_feed, metadata, ltt)
             if not flat:
                 return
 
-            risk_score = flat.get('overall_risk_score', 0)
-            recommendation = flat.get('recommendation', 'HOLD')
-            symbol = flat.get('symbol', '')
-            ltp = flat.get('ltp', 0)
+            # risk_score = flat.get('overall_risk_score', 0)
+            # recommendation = flat.get('recommendation', 'HOLD')
+            # symbol = flat.get('symbol', '')
+            # ltp = flat.get('ltp', 0)
 
         #   b  if risk_score > 75:
         #         logger.warning("HIGH RISK: %s | Score: %.2f | Rec: %s | LTP: %.2f", 
