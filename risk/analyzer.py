@@ -18,7 +18,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 MIN_VALID_TS = datetime(2025, 1, 1, tzinfo=IST).timestamp()
 
 sqs = boto3.client('sqs', region_name='ap-south-1')
-INSERT_QUEUE_URL = 'https://sqs.ap-south-1.amazonaws.com/103371257687/OptionDataInsertQueue'
+INSERT_QUEUE_URL = 'https://sqs.ap-south-1.amazonaws.com/079975324269/OptionDataInsertQueue'
 
 BACKUP_FILE = '/tmp/latest_data_backup.json'
 
