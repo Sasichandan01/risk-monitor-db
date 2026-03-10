@@ -1,7 +1,8 @@
 from datetime import datetime, timezone, timedelta
 import time
 import logging
-
+import mibian
+from datetime import datetime
 logger = logging.getLogger(__name__)
 
 class DataCleaner:
@@ -91,6 +92,7 @@ class DataCleaner:
         except (ValueError, TypeError):
             return 0.0
 
+
     @staticmethod
     def _fill_numeric_fields(data, nifty_spot):
         try:
@@ -99,116 +101,178 @@ class DataCleaner:
             ltp = float(data['ltp'])
             spot = float(nifty_spot)
 
-            if option_type == 'CE':
-                moneyness = spot - strike
+            try:
+                expiry_str = data.get('expiry', '')
+                expiry_dt  = datetime.strptime(expiry_str, '%Y-%m-%d')
+                dte        = max(1, (expiry_dt - datetime.now()).days)
+            except (ValueError, TypeError):
+                dte = 1
+
+            # ── IV ──────────────────────────────────────────────────────────
+            # Priority 1: raw feed (* 100 if decimal)
+            # Priority 2: back-calculate from LTP using mibian implied volatility
+            # Priority 3: NULL
+            raw_iv = data.get('iv')
+            if raw_iv is not None:
+                try:
+                    iv_val = float(raw_iv)
+                    if iv_val <= 0:
+                        data['iv'] = None
+                    elif iv_val < 2.0:
+                        # Upstox sends decimal e.g. 0.4878 → 48.78
+                        data['iv'] = round(iv_val * 100, 4)
+                    else:
+                        data['iv'] = iv_val
+                except (ValueError, TypeError):
+                    data['iv'] = None
             else:
-                moneyness = strike - spot
+                data['iv'] = None
 
-            is_deep_itm = moneyness > 500
-            is_itm      = 0 < moneyness <= 500
-            is_atm      = abs(moneyness) < 100
-            is_otm      = -500 <= moneyness < 0
-            is_deep_otm = moneyness < -500
+            # IV is None — try back-calculating from LTP
+            if data['iv'] is None:
+                try:
+                    if spot > 0 and strike > 0 and ltp > 0 and dte > 0:
+                        if option_type == 'CE':
+                            model = mibian.BS(
+                                [spot, strike, 6.5, dte],
+                                callPrice=ltp
+                            )
+                        else:
+                            model = mibian.BS(
+                                [spot, strike, 6.5, dte],
+                                putPrice=ltp
+                            )
+                        iv_implied = model.impliedVolatility
+                        if iv_implied and iv_implied > 0:
+                            data['iv'] = round(iv_implied, 4)
+                            logger.debug(
+                                "IV back-calculated for %s: %.4f",
+                                data.get('symbol'), data['iv']
+                            )
+                        else:
+                            data['iv'] = None
+                except Exception as e:
+                    logger.warning("IV back-calculation failed for %s: %s", data.get('symbol'), e)
+                    data['iv'] = None
 
+            if data['iv'] is not None:
+                data['iv'] = max(0.0, min(200.0, data['iv']))
+
+            # ── Compute BS greeks if any greek is missing ────────────────────
+            # Only run mibian if at least one greek is None AND we have valid IV
+            needs_bs = any(data.get(g) is None for g in ['delta', 'gamma', 'theta', 'vega'])
+            bs_greeks = {}
+
+            if needs_bs and data['iv'] is not None and spot > 0 and strike > 0 and dte > 0:
+                try:
+                    model = mibian.BS(
+                        [spot, strike, 6.5, dte],
+                        volatility=data['iv']
+                    )
+                    if option_type == 'CE':
+                        bs_greeks = {
+                            'delta': model.callDelta,
+                            'gamma': model.gamma,
+                            'theta': model.callTheta,
+                            'vega':  model.vega / 100
+                        }
+                    else:
+                        bs_greeks = {
+                            'delta': model.putDelta,
+                            'gamma': model.gamma,
+                            'theta': model.putTheta,
+                            'vega':  model.vega / 100
+                        }
+                    logger.debug(
+                        "BS greeks computed for %s | delta=%.4f gamma=%.6f theta=%.4f vega=%.4f",
+                        data.get('symbol'),
+                        bs_greeks['delta'], bs_greeks['gamma'],
+                        bs_greeks['theta'], bs_greeks['vega']
+                    )
+                except Exception as e:
+                    logger.warning("BS computation failed for %s: %s", data.get('symbol'), e)
+                    bs_greeks = {}
+
+            # ── Delta ────────────────────────────────────────────────────────
+            raw_delta = data.get('delta')
+            if raw_delta is None:
+                data['delta'] = bs_greeks.get('delta', None)
+            else:
+                try:
+                    data['delta'] = float(raw_delta)
+                except (ValueError, TypeError):
+                    data['delta'] = bs_greeks.get('delta', None)
+
+            # ── Gamma ────────────────────────────────────────────────────────
+            raw_gamma = data.get('gamma')
+            if raw_gamma is None:
+                data['gamma'] = bs_greeks.get('gamma', None)
+            else:
+                try:
+                    data['gamma'] = float(raw_gamma)
+                except (ValueError, TypeError):
+                    data['gamma'] = bs_greeks.get('gamma', None)
+
+            # ── Theta ────────────────────────────────────────────────────────
+            # Upstox sends correct daily theta — store raw as-is
+            raw_theta = data.get('theta')
+            if raw_theta is None:
+                data['theta'] = bs_greeks.get('theta', None)
+            else:
+                try:
+                    data['theta'] = float(raw_theta)
+                except (ValueError, TypeError):
+                    data['theta'] = bs_greeks.get('theta', None)
+
+            # ── Vega ─────────────────────────────────────────────────────────
+            raw_vega = data.get('vega')
+            if raw_vega is None:
+                data['vega'] = bs_greeks.get('vega', None)
+            else:
+                try:
+                    data['vega'] = float(raw_vega)
+                except (ValueError, TypeError):
+                    data['vega'] = bs_greeks.get('vega', None)
+
+            # ── OI / Volume ──────────────────────────────────────────────────
+            # No formula for these — raw feed or NULL
+            def get_val_or_none(key):
+                try:
+                    val = data.get(key)
+                    if val is None:
+                        return None
+                    f = float(val)
+                    return f if f > 0 else None
+                except (ValueError, TypeError):
+                    return None
+
+            data['oi']     = get_val_or_none('oi')
+            data['volume'] = get_val_or_none('volume')
+
+            # ── OHLC ─────────────────────────────────────────────────────────
+            # Use ltp as fallback for OHLC — these are always present for active strikes
             def get_val(key, default):
                 try:
                     val = data.get(key)
                     if val is None:
                         return default
                     f = float(val)
-                    if f <= 0:
-                        return default
-                    return f
+                    return f if f > 0 else default
                 except (ValueError, TypeError):
                     return default
 
-            # ── IV ──────────────────────────────────────────────────────────
-            # Upstox may send IV as decimal (0.18) or percentage (18.0)
-            # Detect by checking if value < 2.0 → treat as decimal and multiply by 100
-            raw_iv = data.get('iv')
-            if raw_iv is None:
-                data['iv'] = 18.0 if is_atm else (25.0 if is_deep_otm else 15.0)
-            else:
-                try:
-                    iv_val = float(raw_iv)
-                    if iv_val <= 0:
-                        data['iv'] = 18.0 if is_atm else (25.0 if is_deep_otm else 15.0)
-                    elif iv_val < 2.0:
-                        # decimal form e.g. 0.18 → 18.0
-                        data['iv'] = round(iv_val * 100, 4)
-                        logger.debug("IV converted from decimal %.4f → %.4f for %s",
-                                     iv_val, data['iv'], data.get('symbol'))
-                    else:
-                        data['iv'] = iv_val
-                except (ValueError, TypeError):
-                    data['iv'] = 18.0 if is_atm else (25.0 if is_deep_otm else 15.0)
-            data['iv'] = max(0.0, min(200.0, data['iv']))
-
-            # ── Delta ────────────────────────────────────────────────────────
-            delta = data.get('delta')
-            if delta is None:
-                if is_deep_itm:   d = 0.9
-                elif is_itm:      d = 0.7
-                elif is_atm:      d = 0.5
-                elif is_otm:      d = 0.3
-                else:             d = 0.1
-                data['delta'] = d if option_type == 'CE' else -d
-            else:
-                try:
-                    data['delta'] = max(-1.0, min(1.0, float(delta)))
-                except (ValueError, TypeError):
-                    data['delta'] = 0.5 if option_type == 'CE' else -0.5
-
-            # ── Gamma ────────────────────────────────────────────────────────
-            data['gamma'] = get_val(
-                'gamma',
-                0.015 if is_atm else (0.010 if abs(moneyness) < 200 else 0.005)
-            )
-
-            # ── Theta ────────────────────────────────────────────────────────
-            # Upstox may send theta as positive or negative depending on perspective.
-            # We always store as negative (option buyer's theta decay).
-            raw_theta = data.get('theta')
-            if raw_theta is None:
-                if is_atm:          data['theta'] = -ltp * 0.08
-                elif is_deep_otm:   data['theta'] = -ltp * 0.15
-                else:               data['theta'] = -ltp * 0.05
-            else:
-                try:
-                    theta_val = float(raw_theta)
-                    if theta_val > 0:
-                        # Broker sent positive theta — negate it
-                        logger.debug("Theta sign corrected: %.4f → %.4f for %s",
-                                     theta_val, -theta_val, data.get('symbol'))
-                        theta_val = -theta_val
-                    data['theta'] = max(-1000.0, min(0.0, theta_val))
-                except (ValueError, TypeError):
-                    data['theta'] = -ltp * 0.05
-
-            # ── Vega ─────────────────────────────────────────────────────────
-            data['vega'] = get_val(
-                'vega',
-                ltp * 0.15 if is_atm else (ltp * 0.12 if abs(moneyness) < 200 else ltp * 0.08)
-            )
-
-            # ── OI / Volume ──────────────────────────────────────────────────
-            data['oi']     = get_val('oi', 100.0)
-            data['volume'] = get_val('volume', 10.0)
-
-            # ── OHLC ─────────────────────────────────────────────────────────
             for field in ['open', 'high', 'low', 'close']:
                 data[field] = get_val(field, ltp)
 
             # ── Rho ──────────────────────────────────────────────────────────
-            data['rho'] = get_val('rho', 0.01 * ltp)
+            data['rho'] = get_val_or_none('rho')
 
             return data
 
         except (ValueError, TypeError, KeyError) as e:
             logger.error("Error filling numeric fields for %s: %s",
-                         data.get('symbol', 'unknown'), e)
+                        data.get('symbol', 'unknown'), e)
             return data
-
     @staticmethod
     def detect_stale_data(last_update_time):
         try:

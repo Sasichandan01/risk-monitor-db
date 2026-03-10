@@ -315,8 +315,8 @@ class OptionsRiskAnalyzer:
 
     def extract_flat(self, feed_data, metadata, ltt):
         try:
-            ltpc = feed_data.get("ltpc", {})
-            greeks = feed_data.get("optionGreeks", {})
+            ltpc     = feed_data.get("ltpc", {})
+            greeks   = dict(feed_data.get("optionGreeks", {}))
             ohlc_list = feed_data.get("marketOHLC", {}).get("ohlc", [])
             daily_ohlc = next((item for item in ohlc_list if item.get("interval") == "1d"), {})
 
@@ -336,33 +336,45 @@ class OptionsRiskAnalyzer:
             insertion_time = self._next_boundary(ltt)
 
             raw_data = {
-                'time': insertion_time,
-                'symbol': trading_symbol,
+                'time':         insertion_time,
+                'symbol':       trading_symbol,
                 'instrument_key': instrument_key,
-                'strike': metadata.get('strike'),
-                'expiry': metadata.get('expiry'),
-                'option_type': metadata.get('option_type'),
-                'ltp': ltpc.get('ltp'),
-                'open': daily_ohlc.get('open'),
-                'high': daily_ohlc.get('high'),
-                'low': daily_ohlc.get('low'),
-                'close': daily_ohlc.get('close'),
-                'volume': daily_ohlc.get('vol'),
-                'oi': feed_data.get('oi'),
-                'iv': feed_data.get('iv'),
-                'delta': greeks.get('delta'),
-                'theta': greeks.get('theta'),
-                'gamma': greeks.get('gamma'),
-                'vega': greeks.get('vega'),
-                'rho': greeks.get('rho')
+                'strike':       metadata.get('strike'),
+                'expiry':       metadata.get('expiry'),
+                'option_type':  metadata.get('option_type'),
+                'ltp':          ltpc.get('ltp'),
+                'open':         daily_ohlc.get('open'),
+                'high':         daily_ohlc.get('high'),
+                'low':          daily_ohlc.get('low'),
+                'close':        daily_ohlc.get('close'),
+                'volume':       daily_ohlc.get('vol'),
+                'oi':           feed_data.get('oi'),
+                'iv':           feed_data.get('iv'),
+                'delta':        greeks.get('delta'),
+                'theta':        greeks.get('theta'),
+                'gamma':        greeks.get('gamma'),
+                'vega':         greeks.get('vega'),
+                'rho':          greeks.get('rho')
             }
+
+            logger.info(
+                "RAW FEED | %s | ltp=%s | iv=%s | delta=%s | gamma=%s | theta=%s | vega=%s | oi=%s",
+                trading_symbol,
+                raw_data['ltp'],
+                raw_data['iv'],
+                raw_data['delta'],
+                raw_data['gamma'],
+                raw_data['theta'],
+                raw_data['vega'],
+                raw_data['oi']
+            )
 
             cleaned = DataCleaner.clean_option_data(raw_data, self.risk_calculator.nifty_spot)
             if not cleaned:
                 self.stats['invalid_data'] += 1
                 return None
 
-            risk = self.risk_calculator.calculate_risk_metrics(cleaned)  # uses cleaned for calculations
+            risk = self.risk_calculator.calculate_risk_metrics(cleaned)
 
             flat = {
                 'time':               insertion_time.isoformat(),
@@ -371,17 +383,17 @@ class OptionsRiskAnalyzer:
                 'strike':             cleaned['strike'],
                 'expiry':             str(cleaned['expiry']),
                 'option_type':        cleaned['option_type'],
-                # ↓ ltp — use cleaned (already validated)
                 'ltp':                cleaned.get('ltp', 0),
-                # ↓ greeks — use RAW values from Upstox, only fall back to cleaned if raw was None
-                'delta':              raw_data.get('delta') if raw_data.get('delta') is not None else cleaned.get('delta', 0),
-                'gamma':              raw_data.get('gamma') if raw_data.get('gamma') is not None else cleaned.get('gamma', 0),
-                'theta':              raw_data.get('theta') if raw_data.get('theta') is not None else cleaned.get('theta', 0),
-                'vega':               raw_data.get('vega')  if raw_data.get('vega')  is not None else cleaned.get('vega', 0),
-                'iv':                 raw_data.get('iv')    if raw_data.get('iv')    is not None else cleaned.get('iv', 0),
-                'oi':                 int(raw_data.get('oi') if raw_data.get('oi') is not None else cleaned.get('oi', 0)),
-                'volume':             int(raw_data.get('volume') if raw_data.get('volume') is not None else cleaned.get('volume', 0)),
-                # ↓ risk metrics — always from calculator (fine to use cleaned-based calculations)
+                # greeks — raw value if present, cleaned fallback if was None
+                'delta':              raw_data['delta'] if raw_data['delta'] is not None else cleaned.get('delta', 0),
+                'gamma':              raw_data['gamma'] if raw_data['gamma'] is not None else cleaned.get('gamma', 0),
+                'theta':              raw_data['theta'] if raw_data['theta'] is not None else cleaned.get('theta', 0),
+                'vega':               raw_data['vega']  if raw_data['vega']  is not None else cleaned.get('vega', 0),
+                # iv — use cleaned because it has the * 100 conversion applied
+                'iv':                 cleaned.get('iv', 0),
+                'oi':                 int(raw_data['oi'] if raw_data['oi'] is not None else cleaned.get('oi', 0)),
+                'volume':             int(raw_data['volume'] if raw_data['volume'] is not None else cleaned.get('volume', 0)),
+                # risk metrics — always from calculator
                 'overall_risk_score': risk.get('overall_risk_score', 0),
                 'recommendation':     risk.get('recommendation', 'HOLD'),
                 'var_1day':           risk.get('var_1day', 0),
@@ -401,8 +413,8 @@ class OptionsRiskAnalyzer:
             logger.error("Extract error for %s: %s", metadata.get('symbol', 'unknown'), e)
             self.stats['invalid_data'] += 1
             self.stats['errors'] += 1
-            return None
-
+            return None  
+        
     def print_stats(self):
         try:
             logger.info("=" * 50)
