@@ -253,7 +253,19 @@ class OptionsRiskAnalyzer:
                     full_feed = feed_info.get("fullFeed", {}).get("marketFF", {})
                     if not full_feed:
                         continue
-
+                    greeks = full_feed.get("optionGreeks", {})
+                    logger.info(
+                        "RAW FEED | %s | ltp=%s | iv=%s | delta=%s | gamma=%s | theta=%s | vega=%s | oi=%s | ltt=%s",
+                        instrument_key,
+                        full_feed.get("ltpc", {}).get("ltp"),
+                        full_feed.get("iv"),
+                        greeks.get("delta"),
+                        greeks.get("gamma"),
+                        greeks.get("theta"),
+                        greeks.get("vega"),
+                        full_feed.get("oi"),
+                        full_feed.get("ltpc", {}).get("ltt")
+                    )
                     ltt = full_feed.get("ltpc", {}).get("ltt")
                     if not self._is_valid_timestamp(ltt):
                         self.stats['stale_skipped'] += 1
