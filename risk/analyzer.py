@@ -1,11 +1,11 @@
 import threading
-import os
 import time
 import logging
 import json
+import os
+import psycopg2
 from datetime import datetime, timezone, timedelta
 from botocore.exceptions import ClientError
-from concurrent.futures import ThreadPoolExecutor
 
 import boto3
 
@@ -17,72 +17,62 @@ logger = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 MIN_VALID_TS = datetime(2025, 1, 1, tzinfo=IST).timestamp()
 
-sqs = boto3.client('sqs', region_name='ap-south-1')
-INSERT_QUEUE_URL = 'https://sqs.ap-south-1.amazonaws.com/079975324269/OptionDataInsertQueue'
+session = boto3.Session(profile_name='Absc')
+sqs = session.client('sqs', region_name='ap-south-1')
+INSERT_QUEUE_URL = 'https://sqs.ap-south-1.amazonaws.com/103371257687/OptionDataInsertQueue'
 
-import atexit
+BACKUP_FILE = '/tmp/latest_data_backup.json'
 
-def on_exit():
-    logger.error("⚠️ INTERPRETER IS SHUTTING DOWN")
 
-atexit.register(on_exit)
 class OptionsRiskAnalyzer:
-
 
     def __init__(self, fetcher, config):
         self.fetcher = fetcher
         self.config = config
         self.risk_calculator = RiskCalculator()
-        self.instrument_metadata = {}
-        self.metadata_lock = threading.Lock()
+        self.latest_data = {}
+        self.latest_data_lock = threading.Lock()
         self.running = True
         self.last_spot_ssm_write = 0
-        self.executor = None
+        self.empty_flush_count = 0
+        self._restarting = False
         self.stats = {
             'total_received': 0,
             'invalid_data': 0,
             'stale_skipped': 0,
-            'not_subscribed': 0,
             'processed': 0,
             'batches_sent': 0,
             'nifty_updates': 0,
-            'errors': 0
+            'errors': 0,
+            'ws_restarts': 0
         }
+        self._restore_backup()
+
+    def _restore_backup(self):
+        """On startup, restore any records saved during last restart"""
+        if os.path.exists(BACKUP_FILE):
+            try:
+                with open(BACKUP_FILE, 'r') as f:
+                    restored = json.load(f)
+                with self.latest_data_lock:
+                    for key, record in restored.items():
+                        if key not in self.latest_data:
+                            self.latest_data[key] = record
+                logger.info("Restored %d records from backup file", len(restored))
+                os.remove(BACKUP_FILE)
+            except (OSError, ValueError, json.JSONDecodeError) as e:
+                logger.error("Backup restore failed: %s", e)
 
     def start(self):
         try:
             logger.info("Starting Options Risk Analyzer...")
-            
-            self.executor = ThreadPoolExecutor(max_workers=50, thread_name_prefix="RiskCalc")
-            
-            t1 = threading.Thread(target=self._batch_writer, daemon=True)
-            t1.start()
-            logger.info("Batch writer thread alive: %s", t1.is_alive())
-            
-            t2 = threading.Thread(target=self._health_checker, daemon=True)  # ADD THIS
-            t2.start()
-            logger.info("Health checker thread alive: %s", t2.is_alive())
-            
+            t = threading.Thread(target=self._batch_writer, daemon=True)
+            t.start()
+            logger.info("Batch writer thread alive: %s", t.is_alive())
             self.fetcher.start_polling(self.on_message_handler)
         except (RuntimeError, ValueError, TypeError) as e:
             logger.error("Analyzer start failed: %s", e)
             raise
-
-    def _health_checker(self):
-        logger.info("Health checker started")
-        
-        while self.running:
-            time.sleep(60)  # Check every 60 seconds
-            
-            time_since_last_data = time.time() - self.last_data_received
-            
-            if time_since_last_data > 60:
-                logger.error("=" * 70)
-                logger.error("NO DATA RECEIVED FOR %.0f SECONDS - RESTARTING APP", time_since_last_data)
-                logger.error("=" * 70)
-                
-                # Force exit - systemd/supervisor will restart
-                os._exit(1)
 
     def _batch_writer(self):
         logger.info("Batch writer started — aligning to 30s market boundaries")
@@ -99,9 +89,9 @@ class OptionsRiskAnalyzer:
         sleep_secs = 30 - remainder if remainder != 0 else 30
         logger.info("Aligning to next 30s boundary — sleeping %ds", sleep_secs)
         time.sleep(sleep_secs)
+
         logger.info("Batch writer aligned — starting at %s", datetime.now(IST).strftime('%H:%M:%S'))
 
-        flush_count = 0
         while self.running:
             try:
                 now = datetime.now(IST)
@@ -109,17 +99,11 @@ class OptionsRiskAnalyzer:
                     logger.info("Market closed at %s — stopping batch writer", now.strftime('%H:%M:%S'))
                     break
 
-                flush_count += 1
-                logger.info("="*60)
-                logger.info("FLUSH CYCLE #%d | Time: %s", flush_count, now.strftime('%H:%M:%S'))
-                logger.info("="*60)
-                
                 self._flush_batch()
-                
-                logger.info("Waiting 30s for next flush...")
                 time.sleep(30)
 
             except Exception as e:
+                # Catch all — batch writer must never die
                 logger.error("Batch writer error — continuing: %s", e)
                 self.stats['errors'] += 1
                 time.sleep(30)
@@ -127,71 +111,111 @@ class OptionsRiskAnalyzer:
     def _flush_batch(self):
         snapshot = {}
         try:
-            with self.metadata_lock:
-                if not self.instrument_metadata:
-                    logger.info("Nothing to flush at %s", datetime.now(IST).strftime('%H:%M:%S'))
+            with self.latest_data_lock:
+                if not self.latest_data:
+                    self.empty_flush_count += 1
+                    logger.warning(
+                        "Nothing to flush at %s — empty count: %d/2",
+                        datetime.now(IST).strftime('%H:%M:%S'),
+                        self.empty_flush_count
+                    )
+                    if self.empty_flush_count >= 2 and not self._restarting:
+                        logger.warning("60s of no data — triggering WebSocket restart")
+                        self.empty_flush_count = 0
+                        threading.Thread(
+                            target=self._restart_websocket,
+                            daemon=True,
+                            name="ws-restart"
+                        ).start()
                     return
-                snapshot = dict(self.instrument_metadata)
-                self.instrument_metadata.clear()
+
+                # Data is flowing — reset the counter
+                self.empty_flush_count = 0
+                snapshot = dict(self.latest_data)
+                self.latest_data.clear()
 
             records = list(snapshot.values())
-            total_records = len(records)
-            logger.info("Flushing %d records at %s", total_records, datetime.now(IST).strftime('%H:%M:%S'))
+            logger.info("Flushing %d records at %s", len(records), datetime.now(IST).strftime('%H:%M:%S'))
 
-            MAX_BATCH_SIZE_KB = 500
-            batches = []
-            current_batch = []
-            current_size = 0
+            payload = json.dumps({
+                'batch_time': datetime.now(IST).isoformat(),
+                'records': records
+            }, default=str)
 
-            for record in records:
-                record_size = len(json.dumps(record, default=str).encode('utf-8')) / 1024
-                
-                if current_size + record_size > MAX_BATCH_SIZE_KB and current_batch:
-                    batches.append(current_batch)
-                    current_batch = [record]
-                    current_size = record_size
-                else:
-                    current_batch.append(record)
-                    current_size += record_size
+            payload_kb = len(payload.encode('utf-8')) / 1024
+            logger.info("Payload size: %.1fKB", payload_kb)
 
-            if current_batch:
-                batches.append(current_batch)
+            sqs.send_message(
+                QueueUrl=INSERT_QUEUE_URL,
+                MessageBody=payload
+            )
 
-            logger.info("Split into %d batches", len(batches))
+            self.stats['batches_sent'] += 1
+            logger.info("Batch sent to SQS — %d records", len(records))
 
-            for batch_num, batch in enumerate(batches, 1):
-                payload = json.dumps({
-                    'batch_time': datetime.now(IST).isoformat(),
-                    'batch_number': batch_num,
-                    'total_batches': len(batches),
-                    'records': batch
-                }, default=str)
-
-                payload_kb = len(payload.encode('utf-8')) / 1024
-                logger.info("Batch %d/%d - size: %.1fKB - records: %d", 
-                           batch_num, len(batches), payload_kb, len(batch))
-
-                try:
-                    sqs.send_message(
-                        QueueUrl=INSERT_QUEUE_URL,
-                        MessageBody=payload
-                    )
-                    self.stats['batches_sent'] += 1
-                    logger.info("Batch %d/%d sent to SQS", batch_num, len(batches))
-                except ClientError as e:
-                    logger.error("SQS send failed for batch %d/%d: %s", batch_num, len(batches), e)
-                    with self.metadata_lock:
-                        for record in batch:
-                            key = record.get('instrument_key')
-                            if key and key not in self.instrument_metadata:
-                                self.instrument_metadata[key] = record
-                    self.stats['errors'] += 1
-
-            logger.info("Flushed %d records in %d batches", total_records, len(batches))
+        except ClientError as e:
+            logger.error("SQS send failed — returning records to buffer: %s", e)
+            with self.latest_data_lock:
+                for key, record in snapshot.items():
+                    if key not in self.latest_data:
+                        self.latest_data[key] = record
+            self.stats['errors'] += 1
 
         except (ValueError, TypeError) as e:
             logger.error("Flush error: %s", e)
             self.stats['errors'] += 1
+
+    def _restart_websocket(self):
+        self._restarting = True
+        try:
+            logger.warning("WebSocket restart initiated — attempt #%d",
+                           self.stats['ws_restarts'] + 1)
+
+            # Step 1 — backup latest_data so no records are lost
+            with self.latest_data_lock:
+                if self.latest_data:
+                    try:
+                        with open(BACKUP_FILE, 'w') as f:
+                            json.dump(self.latest_data, f, default=str)
+                        logger.info("Backed up %d records to %s",
+                                    len(self.latest_data), BACKUP_FILE)
+                    except (OSError, ValueError) as e:
+                        logger.error("Backup write failed: %s", e)
+
+            # Step 2 — disconnect existing WebSocket
+            try:
+                if self.fetcher._streamer:
+                    self.fetcher._streamer.disconnect()
+                    logger.info("Streamer disconnected")
+            except Exception as e:
+                logger.error("Streamer disconnect error: %s", e)
+
+            time.sleep(5)  # let the connection fully close
+
+            # Step 3 — restore backup into latest_data
+            if os.path.exists(BACKUP_FILE):
+                try:
+                    with open(BACKUP_FILE, 'r') as f:
+                        restored = json.load(f)
+                    with self.latest_data_lock:
+                        for key, record in restored.items():
+                            if key not in self.latest_data:
+                                self.latest_data[key] = record
+                    logger.info("Restored %d records from backup", len(restored))
+                    os.remove(BACKUP_FILE)
+                except (OSError, ValueError, json.JSONDecodeError) as e:
+                    logger.error("Backup restore failed: %s", e)
+
+            # Step 4 — reconnect
+            self.stats['ws_restarts'] += 1
+            logger.info("Restarting WebSocket polling...")
+            self.fetcher.start_polling(self.on_message_handler)
+
+        except Exception as e:
+            logger.error("WebSocket restart failed: %s", e)
+            self.stats['errors'] += 1
+        finally:
+            self._restarting = False
 
     def _is_valid_timestamp(self, ltt_ms):
         if ltt_ms is None:
@@ -199,15 +223,9 @@ class OptionsRiskAnalyzer:
         try:
             ltt_ts = int(ltt_ms) / 1000
             now_ts = datetime.now(IST).timestamp()
-            
-            # logger.info("Timestamp check: ltt=%s, now=%s, diff=%s", ltt_ts, now_ts, now_ts - ltt_ts)  # ADD THIS
-            
             if ltt_ts < MIN_VALID_TS:
-                # logger.warning("Timestamp too old: %s < %s", ltt_ts, MIN_VALID_TS)  # ADD THIS
                 return False
-            
-            if now_ts - ltt_ts > 100:
-                # logger.warning("Timestamp stale: %s - %s = %s seconds", now_ts, ltt_ts, now_ts - ltt_ts)  # ADD THIS
+            if now_ts - ltt_ts > 60:
                 return False
             return True
         except (ValueError, TypeError):
@@ -222,88 +240,49 @@ class OptionsRiskAnalyzer:
         return feed_time.replace(second=next_sec, microsecond=0)
 
     def on_message_handler(self, data):
-        #logger.info("WebSocket message received") 
-        # print(data)
         try:
-            feed_count=0
             feeds = data.get("feeds", {})
             if not feeds:
                 return
 
             for instrument_key, feed_info in feeds.items():
-
                 try:
                     if 'NSE_INDEX|Nifty 50' in instrument_key or 'Nifty 50' in instrument_key:
-                        #logger.info("Nifty index - updating spot")  # ADD THIS
                         self._update_nifty_spot(feed_info)
                         continue
 
                     full_feed = feed_info.get("fullFeed", {}).get("marketFF", {})
                     if not full_feed:
-                        logger.warning("No marketFF for %s", instrument_key)  # ADD THIS
                         continue
 
                     ltt = full_feed.get("ltpc", {}).get("ltt")
-                    # logger.info("Got ltt: %s for %s", ltt, instrument_key)  # ADD THIS
-                    
                     if not self._is_valid_timestamp(ltt):
-                        # logger.warning("Invalid timestamp for %s", instrument_key)  # ADD THIS
                         self.stats['stale_skipped'] += 1
                         continue
 
-                    metadata = self.fetcher.get_instrument_lookup(instrument_key)
+                    metadata = self.fetcher.get_instrument_metadata(instrument_key)
                     if not metadata:
-                        # ADD THIS CHECK
-                        if instrument_key in self.fetcher.subscribed_instruments:
-                            logger.error("BUG: %s is subscribed but NOT in lookup!", instrument_key)
-                        else:
-                            logger.warning("Unsolicited feed: %s not in our subscription", instrument_key)
-                        self.stats['not_subscribed'] += 1
                         continue
 
-                    # logger.info("About to submit %s to executor", instrument_key)  # ADD THIS
                     full_feed['instrument_key'] = instrument_key
 
-                    self.executor.submit(self._process_feed, instrument_key, full_feed, metadata, ltt)
-                    # logger.info("Submitted %s to executor", instrument_key)  # ADD THIS
-                    feed_count += 1
-                except (KeyError, ValueError, TypeError) as e:
-                    logger.error("Feed queueing error for %s: %s", instrument_key, e)
-                    self.stats['errors'] += 1
+                    flat = self.extract_flat(full_feed, metadata, ltt)
+                    if not flat:
+                        continue
 
+                    with self.latest_data_lock:
+                        self.latest_data[instrument_key] = flat
+
+                    self.stats['processed'] += 1
+
+                except (KeyError, ValueError, TypeError) as e:
+                    logger.error("Feed processing error for %s: %s", instrument_key, e)
+                    self.stats['errors'] += 1
 
         except (KeyError, ValueError, TypeError) as e:
             logger.error("Message handler error: %s", e)
             self.stats['errors'] += 1
 
-    def _process_feed(self, instrument_key, full_feed, metadata, ltt):
-        try:
-            self.last_data_received = time.time() 
-            flat = self.extract_flat(full_feed, metadata, ltt)
-            if not flat:
-                return
-
-            # risk_score = flat.get('overall_risk_score', 0)
-            # recommendation = flat.get('recommendation', 'HOLD')
-            # symbol = flat.get('symbol', '')
-            # ltp = flat.get('ltp', 0)
-
-        #   b  if risk_score > 75:
-        #         logger.warning("HIGH RISK: %s | Score: %.2f | Rec: %s | LTP: %.2f", 
-        #                     symbol, risk_score, recommendation, ltp)
-        #     elif risk_score > 50:
-        #         logger.info("MEDIUM RISK: %s | Score: %.2f | Rec: %s | LTP: %.2f", 
-        #                 symol, risk_score, recommendation, ltp)
-
-            with self.metadata_lock:
-                self.instrument_metadata[instrument_key] = flat
-                # logger.info("Stored in metadata: %s | Total metadata: %d", flat.get('symbol'), len(self.instrument_metadata))  # ADD THIS
-
-            self.stats['processed'] += 1
-
-        except (KeyError, ValueError, TypeError) as e:
-            logger.error("Feed processing error for %s: %s", instrument_key, e)
-            self.stats['errors'] += 1
     def _update_nifty_spot(self, feed_info):
         try:
             full_feed = feed_info.get("fullFeed", {}).get("indexFF", {}) or \
@@ -340,7 +319,6 @@ class OptionsRiskAnalyzer:
 
             expiry_date = metadata.get('expiry')
             if not expiry_date:
-                logger.warning("No expiry for %s - skipping", metadata.get('symbol'))  # ADD THIS
                 self.stats['invalid_data'] += 1
                 return None
 
@@ -417,11 +395,10 @@ class OptionsRiskAnalyzer:
             logger.info("STATISTICS")
             logger.info("Received: %d | Processed: %d | Invalid: %d",
                         self.stats['total_received'], self.stats['processed'], self.stats['invalid_data'])
-            logger.info("Stale: %d | Not Subscribed: %d | Batches: %d | Errors: %d",
-                        self.stats['stale_skipped'], self.stats['not_subscribed'], 
-                        self.stats['batches_sent'], self.stats['errors'])
-            logger.info("Nifty: %.2f | Metadata: %d",
-                        self.risk_calculator.nifty_spot, len(self.instrument_metadata))
+            logger.info("Stale Skipped: %d | Batches Sent: %d | Errors: %d",
+                        self.stats['stale_skipped'], self.stats['batches_sent'], self.stats['errors'])
+            logger.info("Nifty: %.2f | Latest Data: %d | WS Restarts: %d",
+                        self.risk_calculator.nifty_spot, len(self.latest_data), self.stats['ws_restarts'])
             logger.info("=" * 50)
         except (KeyError, ValueError) as e:
             logger.error("Stats error: %s", e)
@@ -429,12 +406,11 @@ class OptionsRiskAnalyzer:
     def shutdown(self):
         logger.info("Shutting down analyzer...")
         self.running = False
-        # self.executor.shutdown(wait=True, cancel_futures=False)  # COMMENT THIS OUT
         time.sleep(1)
-        
-        with self.metadata_lock:
-            if self.instrument_metadata:
-                logger.info("Flushing %d remaining records on shutdown...", len(self.instrument_metadata))
+
+        with self.latest_data_lock:
+            if self.latest_data:
+                logger.info("Flushing %d remaining records on shutdown...", len(self.latest_data))
                 self._flush_batch()
-        
+
         logger.info("Analyzer shutdown complete")
