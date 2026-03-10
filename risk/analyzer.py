@@ -253,19 +253,19 @@ class OptionsRiskAnalyzer:
                     full_feed = feed_info.get("fullFeed", {}).get("marketFF", {})
                     if not full_feed:
                         continue
-                    greeks = full_feed.get("optionGreeks", {})
-                    logger.info(
-                        "RAW FEED | %s | ltp=%s | iv=%s | delta=%s | gamma=%s | theta=%s | vega=%s | oi=%s | ltt=%s",
-                        instrument_key,
-                        full_feed.get("ltpc", {}).get("ltp"),
-                        full_feed.get("iv"),
-                        greeks.get("delta"),
-                        greeks.get("gamma"),
-                        greeks.get("theta"),
-                        greeks.get("vega"),
-                        full_feed.get("oi"),
-                        full_feed.get("ltpc", {}).get("ltt")
-                    )
+                    # greeks = full_feed.get("optionGreeks", {})
+                    # logger.info(
+                    #     "RAW FEED | %s | ltp=%s | iv=%s | delta=%s | gamma=%s | theta=%s | vega=%s | oi=%s | ltt=%s",
+                    #     instrument_key,
+                    #     full_feed.get("ltpc", {}).get("ltp"),
+                    #     full_feed.get("iv"),
+                    #     greeks.get("delta"),
+                    #     greeks.get("gamma"),
+                    #     greeks.get("theta"),
+                    #     greeks.get("vega"),
+                    #     full_feed.get("oi"),
+                    #     full_feed.get("ltpc", {}).get("ltt")
+                    # )
                     ltt = full_feed.get("ltpc", {}).get("ltt")
                     if not self._is_valid_timestamp(ltt):
                         self.stats['stale_skipped'] += 1
@@ -362,7 +362,7 @@ class OptionsRiskAnalyzer:
                 self.stats['invalid_data'] += 1
                 return None
 
-            risk = self.risk_calculator.calculate_risk_metrics(cleaned)
+            risk = self.risk_calculator.calculate_risk_metrics(cleaned)  # uses cleaned for calculations
 
             flat = {
                 'time':               insertion_time.isoformat(),
@@ -371,14 +371,17 @@ class OptionsRiskAnalyzer:
                 'strike':             cleaned['strike'],
                 'expiry':             str(cleaned['expiry']),
                 'option_type':        cleaned['option_type'],
+                # ↓ ltp — use cleaned (already validated)
                 'ltp':                cleaned.get('ltp', 0),
-                'delta':              cleaned.get('delta', 0),
-                'gamma':              cleaned.get('gamma', 0),
-                'theta':              cleaned.get('theta', 0),
-                'vega':               cleaned.get('vega', 0),
-                'iv':                 cleaned.get('iv', 0),
-                'oi':                 int(cleaned.get('oi', 0)),
-                'volume':             int(cleaned.get('volume', 0)),
+                # ↓ greeks — use RAW values from Upstox, only fall back to cleaned if raw was None
+                'delta':              raw_data.get('delta') if raw_data.get('delta') is not None else cleaned.get('delta', 0),
+                'gamma':              raw_data.get('gamma') if raw_data.get('gamma') is not None else cleaned.get('gamma', 0),
+                'theta':              raw_data.get('theta') if raw_data.get('theta') is not None else cleaned.get('theta', 0),
+                'vega':               raw_data.get('vega')  if raw_data.get('vega')  is not None else cleaned.get('vega', 0),
+                'iv':                 raw_data.get('iv')    if raw_data.get('iv')    is not None else cleaned.get('iv', 0),
+                'oi':                 int(raw_data.get('oi') if raw_data.get('oi') is not None else cleaned.get('oi', 0)),
+                'volume':             int(raw_data.get('volume') if raw_data.get('volume') is not None else cleaned.get('volume', 0)),
+                # ↓ risk metrics — always from calculator (fine to use cleaned-based calculations)
                 'overall_risk_score': risk.get('overall_risk_score', 0),
                 'recommendation':     risk.get('recommendation', 'HOLD'),
                 'var_1day':           risk.get('var_1day', 0),
