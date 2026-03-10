@@ -259,7 +259,7 @@ class OptionsRiskAnalyzer:
                         self.stats['stale_skipped'] += 1
                         continue
 
-                    metadata = self.fetcher.get_instrument_metadata(instrument_key)
+                    metadata = self.fetcher.get_instrument_lookup(instrument_key)
                     if not metadata:
                         continue
 
