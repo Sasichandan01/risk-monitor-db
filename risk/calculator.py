@@ -255,9 +255,7 @@ class RiskCalculator:
                 elif overall_risk > 50:
                     recommendation = 'REDUCE'
                 elif overall_risk < 30:
-                    if option_type == 'CE' and moneyness > 0:
-                        recommendation = 'BUY'
-                    elif option_type == 'PE' and moneyness > 0:
+                    if moneyness > 0:
                         recommendation = 'BUY'
                     else:
                         recommendation = 'HOLD'
